@@ -4,9 +4,6 @@ letsencrypt/
 # Docker volumes
 volumes/
 
-# Analytics database
-data/
-
 # Environment files (if you add any)
 .env
 .env.local

@@ -11,29 +11,22 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
 ## Features
 
 - ✅ HTTPS with Let's Encrypt (auto-renewal)
-- ✅ Rate limiting: 60 requests/minute per IP for version checks
-- ✅ Rate limiting: 12 requests/hour per client for analytics batches
+- ✅ Rate limiting: 60 requests/minute per IP
 - ✅ DDoS protection: connection limits, timeouts, request size limits
 - ✅ Zero-downtime version updates (edit config file)
-- ✅ Analytics collection with SQLite database
-- ✅ Request signing for analytics (HMAC-SHA256)
-- ✅ Feature usage tracking
-- ✅ Comprehensive payload validation
 - ✅ Health check endpoint
 - ✅ Containerized for easy migration to AWS/cloud
 
 ## Prerequisites
 
 1. **DNS Configuration**
-   - A record: `version.drumscore.scot` → your static IPv4
-   - AAAA record (optional): `version.drumscore.scot` → your static IPv6 (if you have one)
+   - A record: `version.drumscore.scot` → your static IP
    - Wait 5-10 minutes for DNS propagation
    - Verify: `dig version.drumscore.scot` or `nslookup version.drumscore.scot`
 
 2. **Router Port Forwarding**
-   - Forward port 80 → Odroid M1 local IP (IPv4)
-   - Forward port 443 → Odroid M1 local IP (IPv4)
-   - If using IPv6: Ensure firewall allows ports 80/443 (IPv6 typically doesn't need NAT)
+   - Forward port 80 → Odroid M1 local IP
+   - Forward port 443 → Odroid M1 local IP
 
 3. **Docker Installation**
    ```bash
@@ -78,29 +71,18 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
    - Use email: alan@drumscore.scot
    - Store certificates in `./letsencrypt/`
 
-5. **Configure Analytics Secret** (Optional but Recommended)
+5. **Start the services**
    ```bash
-   # Generate a strong secret
-   openssl rand -base64 32 > .analytics_secret
-   
-   # Create .env file
-   echo "ANALYTICS_SECRET=$(cat .analytics_secret)" > .env
-   
-   # Keep this secret safe and use the same value in your client app
+   docker-compose up -d
    ```
 
-6. **Start the services**
-   ```bash
-   docker compose up -d
-   ```
-
-7. **Verify it's working**
+6. **Verify it's working**
    ```bash
    # Check container status
-   docker compose ps
+   docker-compose ps
    
    # Check logs
-   docker compose logs -f
+   docker-compose logs -f
    
    # Test the endpoint
    curl https://version.drumscore.scot/api/version
@@ -112,8 +94,6 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
 version-api/
 ├── docker-compose.yml          # Container orchestration
 ├── setup-letsencrypt.sh        # Certificate setup script
-├── .env.example                # Example environment variables
-├── API_CONTRACT.md             # API documentation for client developers
 ├── config/
 │   └── version.json            # ← Edit this to update version
 ├── nginx/
@@ -121,8 +101,6 @@ version-api/
 ├── api/
 │   ├── Dockerfile              # Go API container build
 │   └── main.go                 # API server code
-├── data/                       # Created automatically
-│   └── analytics.db            # SQLite database (created on first run)
 └── letsencrypt/                # Let's Encrypt certificates (created by setup)
 ```
 
@@ -155,10 +133,6 @@ No container restart needed! The API checks for file changes every 30 seconds.
 **Version Check**
 ```bash
 GET https://version.drumscore.scot/api/version
-
-# With client ID for analytics tracking
-curl -H "X-Client-ID: your-client-id-hash" \
-  https://version.drumscore.scot/api/version
 ```
 
 Response:
@@ -173,23 +147,10 @@ Response:
 }
 ```
 
-**Analytics Batch** (for app feature tracking)
-```bash
-POST https://version.drumscore.scot/api/analytics/batch
-Headers:
-  Content-Type: application/json
-  X-Client-ID: client-id-hash
-  X-Signature: hmac-sha256-signature
-
-Body: See API_CONTRACT.md for detailed specification
-```
-
 **Health Check** (no rate limiting)
 ```bash
 GET https://version.drumscore.scot/health
 ```
-
-For complete API documentation and client implementation guide, see [API_CONTRACT.md](API_CONTRACT.md).
 
 ### Rate Limiting
 
@@ -201,23 +162,23 @@ For complete API documentation and client implementation guide, see [API_CONTRAC
 
 ```bash
 # Start services
-docker compose up -d
+docker-compose up -d
 
 # Stop services
-docker compose down
+docker-compose down
 
 # View logs
-docker compose logs -f
+docker-compose logs -f
 
 # View specific service logs
-docker compose logs -f api
-docker compose logs -f nginx
+docker-compose logs -f api
+docker-compose logs -f nginx
 
 # Restart a service
-docker compose restart api
+docker-compose restart api
 
 # Rebuild after code changes
-docker compose up -d --build
+docker-compose up -d --build
 ```
 
 ### Certificate Renewal
@@ -225,8 +186,8 @@ docker compose up -d --build
 Certificates auto-renew via the certbot container. To manually trigger renewal:
 
 ```bash
-docker compose exec certbot certbot renew
-docker compose restart nginx
+docker-compose exec certbot certbot renew
+docker-compose restart nginx
 ```
 
 ## Auto-Start on Boot
@@ -247,10 +208,10 @@ After=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=/home/alanwhite/drumscore-version-api
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
-User=alanwhite
+WorkingDirectory=/home/youruser/version-api
+ExecStart=/usr/bin/docker-compose up -d
+ExecStop=/usr/bin/docker-compose down
+User=youruser
 
 [Install]
 WantedBy=multi-user.target
@@ -282,61 +243,16 @@ sudo systemctl start version-api
 - X-Content-Type-Options: nosniff
 - X-XSS-Protection: enabled
 
-### Monitoring
+## Monitoring
 
 ### Check if services are running
 ```bash
-docker compose ps
+docker-compose ps
 ```
 
 ### View resource usage
 ```bash
 docker stats
-```
-
-### Query Analytics Data
-
-Access the SQLite database to view analytics:
-
-```bash
-# Connect to database
-docker compose exec api sqlite3 /app/data/analytics.db
-
-# Useful queries:
-```
-
-**Unique users (last 30 days):**
-```sql
-SELECT COUNT(DISTINCT client_id) as unique_users
-FROM version_checks
-WHERE timestamp > datetime('now', '-30 days');
-```
-
-**Most used features:**
-```sql
-SELECT feature_name, COUNT(*) as usage_count
-FROM analytics_events
-WHERE event_type = 'feature_used'
-  AND timestamp > datetime('now', '-30 days')
-GROUP BY feature_name
-ORDER BY usage_count DESC
-LIMIT 10;
-```
-
-**Platform breakdown:**
-```sql
-SELECT os_family, COUNT(DISTINCT client_id) as users
-FROM analytics_events
-GROUP BY os_family;
-```
-
-**Daily active users:**
-```sql
-SELECT DATE(timestamp) as date, COUNT(DISTINCT client_id) as dau
-FROM analytics_events
-WHERE timestamp > datetime('now', '-30 days')
-GROUP BY DATE(timestamp)
-ORDER BY date DESC;
 ```
 
 ### Test from your Flutter app
@@ -370,35 +286,16 @@ openssl s_client -connect version.drumscore.scot:443 -servername version.drumsco
 ### Can't reach the API
 1. Check DNS: `nslookup version.drumscore.scot`
 2. Check port forwarding on router
-3. Check containers: `docker compose ps`
-4. Check logs: `docker compose logs -f nginx`
-
-### Analytics not working
-```bash
-# Check database exists
-docker compose exec api ls -la /app/data/
-
-# Check database has tables
-docker compose exec api sqlite3 /app/data/analytics.db ".tables"
-
-# View recent events
-docker compose exec api sqlite3 /app/data/analytics.db \
-  "SELECT * FROM analytics_events ORDER BY timestamp DESC LIMIT 10;"
-
-# Check for signature errors in logs
-docker compose logs api | grep "Invalid signature"
-```
+3. Check containers: `docker-compose ps`
+4. Check logs: `docker-compose logs -f nginx`
 
 ### Rate limiting too strict/loose
 Edit `nginx/nginx.conf`:
 ```nginx
 # Change rate (currently 60r/m = 60 requests per minute)
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=120r/m;
-
-# Analytics rate (currently 12r/h = one every 5 minutes)
-limit_req_zone $http_x_client_id zone=analytics_limit:10m rate=24r/h;
 ```
-Then: `docker compose restart nginx`
+Then: `docker-compose restart nginx`
 
 ## Migration to AWS
 
@@ -414,7 +311,6 @@ The containerized approach ensures consistency across environments.
 ## Support
 
 For issues or questions:
-- Check logs: `docker compose logs -f`
+- Check logs: `docker-compose logs -f`
 - Verify DNS: `dig version.drumscore.scot`
 - Test locally: `curl https://version.drumscore.scot/api/version`
-- Review API contract: See [API_CONTRACT.md](API_CONTRACT.md) for client implementation

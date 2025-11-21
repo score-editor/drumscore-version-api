@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   nginx:
     image: nginx:alpine
@@ -34,11 +36,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./config:/app/config:ro
-      - ./data:/app/data
     environment:
       - CONFIG_PATH=/app/config/version.json
-      - DB_PATH=/app/data/analytics.db
-      - ANALYTICS_SECRET=${ANALYTICS_SECRET:-}
     networks:
       - version-api-network
     expose:
