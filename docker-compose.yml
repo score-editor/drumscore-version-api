@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: version-api-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./letsencrypt:/etc/letsencrypt:ro
+      - ./letsencrypt/www:/var/www/certbot:ro
+    depends_on:
+      - api
+    networks:
+      - version-api-network
+
+  certbot:
+    image: certbot/certbot
+    container_name: version-api-certbot
+    restart: unless-stopped
+    volumes:
+      - ./letsencrypt:/etc/letsencrypt
+      - ./letsencrypt/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - version-api-network
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: version-api-service
+    restart: unless-stopped
+    volumes:
+      - ./config:/app/config:ro
+    environment:
+      - CONFIG_PATH=/app/config/version.json
+    networks:
+      - version-api-network
+    expose:
+      - "8080"
+
+networks:
+  version-api-network:
+    driver: bridge
