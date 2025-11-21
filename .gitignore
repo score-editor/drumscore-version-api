@@ -10,6 +10,7 @@ data/
 # Environment files (if you add any)
 .env
 .env.local
+.analytics_secret
 
 # Logs
 *.log
