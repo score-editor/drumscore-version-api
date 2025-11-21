@@ -298,22 +298,49 @@ private static String generateClientId() throws Exception {
 
 ## Testing
 
+### Generate a Valid Test Client ID
+
+```bash
+# Generate a valid 64-character hex client ID for testing
+TEST_CLIENT_ID=$(echo -n "test-client-$(date +%s)" | sha256sum | awk '{print $1}')
+echo "Test Client ID: $TEST_CLIENT_ID"
+```
+
 ### Test Version Check
 ```bash
-curl -H "X-Client-ID: abc123..." \
+# With valid client ID (will be logged to analytics)
+curl -H "X-Client-ID: $TEST_CLIENT_ID" \
   https://version.drumscore.scot/api/version
+
+# Or with a hardcoded example:
+curl -H "X-Client-ID: a3f5b8c2d1e4f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1" \
+  https://version.drumscore.scot/api/version
+
+# Without client ID (still works, but not tracked)
+curl https://version.drumscore.scot/api/version
 ```
+
+**Note:** Invalid client IDs are silently ignored - the API will still return version info, but won't log the request to analytics.
 
 ### Test Analytics Batch
 ```bash
-# Generate signature first with your secret
-PAYLOAD='{"clientId":"abc123...","appVersion":"3.4.0","os":{"family":"macOS","version":"14.1","arch":"aarch64"},"sessionStart":1700567890000,"events":[{"timestamp":1700567900000,"eventType":"feature_used","featureName":"export_pdf","metadata":{}}]}'
+# First generate a valid client ID and secret
+TEST_CLIENT_ID=$(echo -n "test-client-$(date +%s)" | sha256sum | awk '{print $1}')
+SECRET="your-secret-here"  # Use the actual secret from your .env file
 
-SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "your-secret-here" -binary | base64)
+# Create test payload
+PAYLOAD=$(cat <<EOF
+{"clientId":"$TEST_CLIENT_ID","appVersion":"3.4.0","os":{"family":"Linux","version":"Ubuntu 22.04","arch":"x86_64"},"sessionStart":$(date +%s)000,"events":[{"timestamp":$(date +%s)000,"eventType":"feature_used","featureName":"export_pdf","metadata":{}}]}
+EOF
+)
 
+# Generate signature
+SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$SECRET" -binary | base64)
+
+# Send request
 curl -X POST \
   -H "Content-Type: application/json" \
-  -H "X-Client-ID: abc123..." \
+  -H "X-Client-ID: $TEST_CLIENT_ID" \
   -H "X-Signature: $SIGNATURE" \
   -d "$PAYLOAD" \
   https://version.drumscore.scot/api/analytics/batch
