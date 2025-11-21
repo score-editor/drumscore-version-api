@@ -88,6 +88,12 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
    
    # Keep this secret safe and use the same value in your client app
    ```
+   
+   **CRITICAL:** 
+   - Back up this secret in a secure location (password manager, etc.)
+   - You'll need it when implementing the Java client
+   - Once clients are deployed, this secret becomes permanent
+   - Never rotate without updating all clients simultaneously
 
 6. **Start the services**
    ```bash
@@ -296,47 +302,56 @@ docker stats
 
 ### Query Analytics Data
 
-Access the SQLite database to view analytics:
+**Install sqlite3 on the Odroid (if not already installed):**
+```bash
+sudo apt-get install sqlite3
+```
+
+**Access the database directly from the host:**
 
 ```bash
 # Connect to database
-docker compose exec api sqlite3 /app/data/analytics.db
-
-# Useful queries:
+sqlite3 ~/drumscore-version-api/data/analytics.db
 ```
 
+**Useful queries:**
+
 **Unique users (last 30 days):**
-```sql
-SELECT COUNT(DISTINCT client_id) as unique_users
-FROM version_checks
-WHERE timestamp > datetime('now', '-30 days');
+```bash
+sqlite3 ~/drumscore-version-api/data/analytics.db \
+  "SELECT COUNT(DISTINCT client_id) as unique_users
+   FROM version_checks
+   WHERE timestamp > datetime('now', '-30 days');"
 ```
 
 **Most used features:**
-```sql
-SELECT feature_name, COUNT(*) as usage_count
-FROM analytics_events
-WHERE event_type = 'feature_used'
-  AND timestamp > datetime('now', '-30 days')
-GROUP BY feature_name
-ORDER BY usage_count DESC
-LIMIT 10;
+```bash
+sqlite3 ~/drumscore-version-api/data/analytics.db \
+  "SELECT feature_name, COUNT(*) as usage_count
+   FROM analytics_events
+   WHERE event_type = 'feature_used'
+     AND timestamp > datetime('now', '-30 days')
+   GROUP BY feature_name
+   ORDER BY usage_count DESC
+   LIMIT 10;"
 ```
 
 **Platform breakdown:**
-```sql
-SELECT os_family, COUNT(DISTINCT client_id) as users
-FROM analytics_events
-GROUP BY os_family;
+```bash
+sqlite3 ~/drumscore-version-api/data/analytics.db \
+  "SELECT os_family, COUNT(DISTINCT client_id) as users
+   FROM analytics_events
+   GROUP BY os_family;"
 ```
 
 **Daily active users:**
-```sql
-SELECT DATE(timestamp) as date, COUNT(DISTINCT client_id) as dau
-FROM analytics_events
-WHERE timestamp > datetime('now', '-30 days')
-GROUP BY DATE(timestamp)
-ORDER BY date DESC;
+```bash
+sqlite3 ~/drumscore-version-api/data/analytics.db \
+  "SELECT DATE(timestamp) as date, COUNT(DISTINCT client_id) as dau
+   FROM analytics_events
+   WHERE timestamp > datetime('now', '-30 days')
+   GROUP BY DATE(timestamp)
+   ORDER BY date DESC;"
 ```
 
 ### Test from your Flutter app
@@ -376,13 +391,13 @@ openssl s_client -connect version.drumscore.scot:443 -servername version.drumsco
 ### Analytics not working
 ```bash
 # Check database exists
-docker compose exec api ls -la /app/data/
+ls -la ~/drumscore-version-api/data/
 
-# Check database has tables
-docker compose exec api sqlite3 /app/data/analytics.db ".tables"
+# Check database has tables (requires sqlite3 installed on host)
+sqlite3 ~/drumscore-version-api/data/analytics.db ".tables"
 
 # View recent events
-docker compose exec api sqlite3 /app/data/analytics.db \
+sqlite3 ~/drumscore-version-api/data/analytics.db \
   "SELECT * FROM analytics_events ORDER BY timestamp DESC LIMIT 10;"
 
 # Check for signature errors in logs

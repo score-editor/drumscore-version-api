@@ -28,6 +28,10 @@
    ```
 
 5. **Set analytics secret** (optional but recommended)
+   
+   **IMPORTANT:** If you already have clients deployed with a secret, you MUST use the same secret. Only generate a new one for initial setup.
+   
+   **For initial setup (no clients deployed yet):**
    ```bash
    # Generate secret
    openssl rand -base64 32 > .analytics_secret
@@ -35,8 +39,16 @@
    # Create .env file
    echo "ANALYTICS_SECRET=$(cat .analytics_secret)" > .env
    
-   # IMPORTANT: Use this same secret in your Java client!
+   # IMPORTANT: Save this secret - you'll need it in your Java client!
    cat .analytics_secret
+   
+   # Back up the secret somewhere safe (not in git!)
+   ```
+   
+   **If you already have the secret from before:**
+   ```bash
+   # Use your existing secret
+   echo "ANALYTICS_SECRET=your-existing-secret-here" > .env
    ```
 
 6. **Rebuild and restart**
@@ -88,8 +100,8 @@ Once your client app is updated to send analytics, test with:
 # Watch for incoming events
 docker compose logs -f api | grep "Received"
 
-# Query database
-docker compose exec api sqlite3 /app/data/analytics.db \
+# Query database (requires sqlite3 on host: sudo apt-get install sqlite3)
+sqlite3 ~/drumscore-version-api/data/analytics.db \
   "SELECT COUNT(*) FROM analytics_events;"
 ```
 
@@ -114,8 +126,12 @@ docker compose up -d
 ### Important Notes
 
 1. **The analytics secret** in `.env` must match what you embed in your Java client
+   - **NEVER rotate this secret** without updating all deployed clients simultaneously
+   - **Back up the secret** in a secure location (password manager, encrypted file, etc.)
+   - If you lose the secret, all existing clients will fail authentication
+   - Consider this secret as permanent for the lifetime of your deployed clients
 2. **Database grows over time** - plan for log rotation/cleanup
-3. **Rate limiting** is per client ID for analytics (12/hour = one every 5 min)
+3. **Rate limiting** is per client ID for analytics (1/min with burst 10)
 4. **Backwards compatible** - clients without analytics will continue to work
 5. **Privacy-first** - no PII collected, only anonymous machine hashes
 
