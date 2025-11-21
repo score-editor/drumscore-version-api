@@ -254,45 +254,172 @@ HttpRequest request = HttpRequest.newBuilder()
 ### Client ID Generation
 
 ```java
-import java.security.MessageDigest;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.InputStreamReader;
 import java.net.NetworkInterface;
+import java.nio.file.Files;
+import java.security.MessageDigest;
 import java.util.Enumeration;
 
-private static String generateClientId() throws Exception {
-    // Get stable machine identifiers
-    StringBuilder machineInfo = new StringBuilder();
+public class MachineIdGenerator {
     
-    // MAC address (first non-loopback)
-    Enumeration<NetworkInterface> networks = NetworkInterface.getNetworkInterfaces();
-    while (networks.hasMoreElements()) {
-        NetworkInterface network = networks.nextElement();
-        if (!network.isLoopback() && network.getHardwareAddress() != null) {
-            byte[] mac = network.getHardwareAddress();
-            for (byte b : mac) {
-                machineInfo.append(String.format("%02X", b));
+    /**
+     * Generates a stable, anonymous machine identifier using OS-specific facilities.
+     * NO PII - uses system machine IDs, not user information.
+     */
+    public static String generateClientId() {
+        try {
+            String machineId = getMachineId();
+            
+            // Hash with SHA-256 to create 64-character hex string
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(machineId.getBytes("UTF-8"));
+            
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                hexString.append(String.format("%02x", b));
             }
-            break;
+            
+            return hexString.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to generate client ID", e);
         }
     }
     
-    // OS info
-    machineInfo.append(System.getProperty("os.name"));
-    machineInfo.append(System.getProperty("os.version"));
-    machineInfo.append(System.getProperty("user.home")); // path, not username
-    
-    // Hash with SHA-256
-    MessageDigest digest = MessageDigest.getInstance("SHA-256");
-    byte[] hash = digest.digest(machineInfo.toString().getBytes("UTF-8"));
-    
-    // Convert to hex string
-    StringBuilder hexString = new StringBuilder();
-    for (byte b : hash) {
-        hexString.append(String.format("%02x", b));
+    /**
+     * Gets OS-specific machine identifier.
+     * Uses actual system machine IDs, not user info or network adapters.
+     */
+    private static String getMachineId() throws Exception {
+        String os = System.getProperty("os.name").toLowerCase();
+        
+        if (os.contains("win")) {
+            return getWindowsMachineId();
+        } else if (os.contains("mac")) {
+            return getMacMachineId();
+        } else if (os.contains("linux")) {
+            return getLinuxMachineId();
+        } else {
+            // Fallback for other Unix-like systems
+            return getGenericMachineId();
+        }
     }
     
-    return hexString.toString();
+    /**
+     * Windows: Read MachineGuid from registry
+     */
+    private static String getWindowsMachineId() throws Exception {
+        Process process = Runtime.getRuntime().exec(
+            "reg query HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid"
+        );
+        
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.contains("MachineGuid")) {
+                    String[] parts = line.trim().split("\\s+");
+                    return parts[parts.length - 1];
+                }
+            }
+        }
+        
+        throw new Exception("Could not read Windows MachineGuid");
+    }
+    
+    /**
+     * macOS: Read IOPlatformUUID (hardware UUID)
+     */
+    private static String getMacMachineId() throws Exception {
+        Process process = Runtime.getRuntime().exec(
+            "ioreg -rd1 -c IOPlatformExpertDevice"
+        );
+        
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.contains("IOPlatformUUID")) {
+                    // Format: "IOPlatformUUID" = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+                    int start = line.indexOf("\"", line.indexOf("=")) + 1;
+                    int end = line.lastIndexOf("\"");
+                    return line.substring(start, end);
+                }
+            }
+        }
+        
+        throw new Exception("Could not read macOS IOPlatformUUID");
+    }
+    
+    /**
+     * Linux: Read /etc/machine-id (systemd machine ID)
+     */
+    private static String getLinuxMachineId() throws Exception {
+        File machineIdFile = new File("/etc/machine-id");
+        if (!machineIdFile.exists()) {
+            // Fallback to /var/lib/dbus/machine-id
+            machineIdFile = new File("/var/lib/dbus/machine-id");
+        }
+        
+        if (machineIdFile.exists()) {
+            return new String(Files.readAllBytes(machineIdFile.toPath())).trim();
+        }
+        
+        throw new Exception("Could not read Linux machine-id");
+    }
+    
+    /**
+     * Generic fallback: Use MAC address + system properties
+     */
+    private static String getGenericMachineId() throws Exception {
+        StringBuilder sb = new StringBuilder();
+        
+        // System properties (NO PII)
+        sb.append(System.getProperty("os.name"));
+        sb.append(System.getProperty("os.version"));
+        sb.append(System.getProperty("os.arch"));
+        
+        // MAC address as fallback identifier
+        Enumeration<NetworkInterface> networks = NetworkInterface.getNetworkInterfaces();
+        while (networks.hasMoreElements()) {
+            NetworkInterface network = networks.nextElement();
+            if (!network.isLoopback() && network.getHardwareAddress() != null) {
+                byte[] mac = network.getHardwareAddress();
+                for (byte b : mac) {
+                    sb.append(String.format("%02X", b));
+                }
+                break; // Use first non-loopback MAC
+            }
+        }
+        
+        if (sb.length() == 0) {
+            throw new Exception("Could not determine machine ID");
+        }
+        
+        return sb.toString();
+    }
 }
 ```
+
+**What's used (NOT PII):**
+- **Windows**: `MachineGuid` from registry - unique per Windows installation
+- **macOS**: `IOPlatformUUID` - hardware UUID from the platform
+- **Linux**: `/etc/machine-id` - systemd machine ID, unique per installation
+- **Fallback**: MAC address + OS properties (for other Unix systems)
+
+**What's excluded (PII):**
+- ❌ Username
+- ❌ User home path
+- ❌ User email
+- ❌ Any user-identifiable information
+
+**Properties:**
+- ✅ Stable across reboots
+- ✅ Unique per machine
+- ✅ Works offline
+- ✅ Privacy-preserving
+- ✅ GDPR compliant
 
 ---
 
