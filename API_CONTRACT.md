@@ -2,7 +2,7 @@
 
 ## Base URL
 ```
-https://version.drumscore.scot
+https://support.drumscore.scot
 ```
 
 ## Authentication
@@ -437,14 +437,14 @@ echo "Test Client ID: $TEST_CLIENT_ID"
 ```bash
 # With valid client ID (will be logged to analytics)
 curl -H "X-Client-ID: $TEST_CLIENT_ID" \
-  https://version.drumscore.scot/api/version
+  https://support.drumscore.scot/api/version
 
 # Or with a hardcoded example:
 curl -H "X-Client-ID: a3f5b8c2d1e4f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1" \
-  https://version.drumscore.scot/api/version
+  https://support.drumscore.scot/api/version
 
 # Without client ID (still works, but not tracked)
-curl https://version.drumscore.scot/api/version
+curl https://support.drumscore.scot/api/version
 ```
 
 **Note:** Invalid client IDs are silently ignored - the API will still return version info, but won't log the request to analytics.
@@ -470,7 +470,7 @@ curl -X POST \
   -H "X-Client-ID: $TEST_CLIENT_ID" \
   -H "X-Signature: $SIGNATURE" \
   -d "$PAYLOAD" \
-  https://version.drumscore.scot/api/analytics/batch
+  https://support.drumscore.scot/api/analytics/batch
 ```
 
 ---

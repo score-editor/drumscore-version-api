@@ -66,7 +66,7 @@
    docker compose logs -f
    
    # Test version endpoint
-   curl https://version.drumscore.scot/api/version
+   curl https://support.drumscore.scot/api/version
    
    # Check database was created
    docker compose exec api ls -la /app/data/

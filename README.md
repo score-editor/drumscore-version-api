@@ -5,8 +5,13 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
 ## Architecture
 
 - **Nginx**: Reverse proxy with TLS termination, rate limiting, DDoS protection
-- **Go API**: Lightweight version service
-- **Certbot**: Automatic Let's Encrypt certificate management
+  - Routes multiple subdomains to different backend services
+  - Each service gets its own SSL certificate
+- **Go API**: Lightweight version and analytics service (support.drumscore.scot)
+- **Certbot**: Automatic Let's Encrypt certificate management for all domains
+- **Multi-Service Ready**: Easy to add new services (license, auth, etc.) on separate subdomains
+
+See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
 
 ## Features
 
@@ -25,10 +30,10 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
 ## Prerequisites
 
 1. **DNS Configuration**
-   - A record: `version.drumscore.scot` → your static IPv4
-   - AAAA record (optional): `version.drumscore.scot` → your static IPv6 (if you have one)
+   - A record: `support.drumscore.scot` → your static IPv4
+   - AAAA record (optional): `support.drumscore.scot` → your static IPv6 (if you have one)
    - Wait 5-10 minutes for DNS propagation
-   - Verify: `dig version.drumscore.scot` or `nslookup version.drumscore.scot`
+   - Verify: `dig support.drumscore.scot` or `nslookup support.drumscore.scot`
 
 2. **Router Port Forwarding**
    - Forward port 80 → Odroid M1 local IP (IPv4)
@@ -74,7 +79,7 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
    ```
    
    This will:
-   - Request a certificate for version.drumscore.scot
+   - Request a certificate for support.drumscore.scot
    - Use email: alan@drumscore.scot
    - Store certificates in `./letsencrypt/`
 
@@ -109,7 +114,7 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
    docker compose logs -f
    
    # Test the endpoint
-   curl https://version.drumscore.scot/api/version
+   curl https://support.drumscore.scot/api/version
    ```
 
 ## Directory Structure
@@ -160,11 +165,11 @@ No container restart needed! The API checks for file changes every 30 seconds.
 
 **Version Check**
 ```bash
-GET https://version.drumscore.scot/api/version
+GET https://support.drumscore.scot/api/version
 
 # With client ID for analytics tracking
 curl -H "X-Client-ID: your-client-id-hash" \
-  https://version.drumscore.scot/api/version
+  https://support.drumscore.scot/api/version
 ```
 
 Response:
@@ -181,7 +186,7 @@ Response:
 
 **Analytics Batch** (for app feature tracking)
 ```bash
-POST https://version.drumscore.scot/api/analytics/batch
+POST https://support.drumscore.scot/api/analytics/batch
 Headers:
   Content-Type: application/json
   X-Client-ID: client-id-hash
@@ -192,7 +197,7 @@ Body: See API_CONTRACT.md for detailed specification
 
 **Health Check** (no rate limiting)
 ```bash
-GET https://version.drumscore.scot/health
+GET https://support.drumscore.scot/health
 ```
 
 For complete API documentation and client implementation guide, see [API_CONTRACT.md](API_CONTRACT.md).
@@ -358,7 +363,7 @@ sqlite3 ~/drumscore-version-api/data/analytics.db \
 ```dart
 Future<Map<String, dynamic>> checkVersion() async {
   final response = await http.get(
-    Uri.parse('https://version.drumscore.scot/api/version')
+    Uri.parse('https://support.drumscore.scot/api/version')
   );
   
   if (response.statusCode == 200) {
@@ -376,14 +381,14 @@ Future<Map<String, dynamic>> checkVersion() async {
 ### Certificate issues
 ```bash
 # Check certificate validity
-openssl s_client -connect version.drumscore.scot:443 -servername version.drumscore.scot
+openssl s_client -connect support.drumscore.scot:443 -servername support.drumscore.scot
 
 # Test with staging certificates first
 # Edit setup-letsencrypt.sh and set STAGING=1
 ```
 
 ### Can't reach the API
-1. Check DNS: `nslookup version.drumscore.scot`
+1. Check DNS: `nslookup support.drumscore.scot`
 2. Check port forwarding on router
 3. Check containers: `docker compose ps`
 4. Check logs: `docker compose logs -f nginx`
@@ -430,6 +435,6 @@ The containerized approach ensures consistency across environments.
 
 For issues or questions:
 - Check logs: `docker compose logs -f`
-- Verify DNS: `dig version.drumscore.scot`
-- Test locally: `curl https://version.drumscore.scot/api/version`
+- Verify DNS: `dig support.drumscore.scot`
+- Test locally: `curl https://support.drumscore.scot/api/version`
 - Review API contract: See [API_CONTRACT.md](API_CONTRACT.md) for client implementation

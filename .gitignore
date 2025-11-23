@@ -7,7 +7,7 @@ volumes/
 # Analytics database
 data/
 
-# Environment files (if you add any)
+# Environment files and secrets
 .env
 .env.local
 .analytics_secret

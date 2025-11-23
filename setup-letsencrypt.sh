@@ -5,7 +5,7 @@
 
 set -e
 
-DOMAIN="version.drumscore.scot"
+DOMAIN="support.drumscore.scot"
 EMAIL="alan@drumscore.scot"
 STAGING=0  # Set to 1 for testing, 0 for production
 
@@ -77,8 +77,8 @@ if [ $? -eq 0 ]; then
     echo "Certificate location: ./letsencrypt/live/$DOMAIN/"
     echo ""
     echo "Next steps:"
-    echo "1. Start the services: docker-compose up -d"
-    echo "2. Check logs: docker-compose logs -f"
+    echo "1. Start the services: docker compose up -d"
+    echo "2. Check logs: docker compose logs -f"
     echo "3. Test endpoint: curl https://$DOMAIN/api/version"
     echo ""
     echo "Certificates will auto-renew via the certbot container"
