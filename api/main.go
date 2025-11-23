@@ -28,9 +28,20 @@ type VersionInfo struct {
 	ReleaseNotes        string `json:"releaseNotes,omitempty"`
 }
 
+type ArchVersions struct {
+	X86_64   VersionInfo `json:"x86_64"`
+	Aarch64  VersionInfo `json:"aarch64"`
+}
+
+type PlatformVersions struct {
+	Windows ArchVersions `json:"windows"`
+	MacOS   ArchVersions `json:"macos"`
+	Linux   ArchVersions `json:"linux"`
+}
+
 type Config struct {
 	mu       sync.RWMutex
-	data     *VersionInfo
+	data     *PlatformVersions
 	filePath string
 	lastMod  time.Time
 }
@@ -126,9 +137,9 @@ func (c *Config) Load() error {
 	}
 	defer file.Close()
 
-	var info VersionInfo
+	var platforms PlatformVersions
 	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&info); err != nil {
+	if err := decoder.Decode(&platforms); err != nil {
 		return err
 	}
 
@@ -137,9 +148,12 @@ func (c *Config) Load() error {
 		return err
 	}
 
-	c.data = &info
+	c.data = &platforms
 	c.lastMod = stat.ModTime()
-	log.Printf("Loaded version config: %s (build: %s)", info.Version, info.Build)
+	log.Printf("Loaded platform versions: Windows(x64=%s,arm64=%s), macOS(x64=%s,arm64=%s), Linux(x64=%s,arm64=%s)",
+		platforms.Windows.X86_64.Version, platforms.Windows.Aarch64.Version,
+		platforms.MacOS.X86_64.Version, platforms.MacOS.Aarch64.Version,
+		platforms.Linux.X86_64.Version, platforms.Linux.Aarch64.Version)
 	return nil
 }
 
@@ -160,10 +174,40 @@ func (c *Config) CheckAndReload() error {
 	return nil
 }
 
-func (c *Config) Get() *VersionInfo {
+func (c *Config) Get() *PlatformVersions {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.data
+}
+
+func (c *Config) GetPlatformArch(platform, arch string) *VersionInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	if c.data == nil {
+		return nil
+	}
+	
+	var archVersions *ArchVersions
+	switch platform {
+	case "windows":
+		archVersions = &c.data.Windows
+	case "macos":
+		archVersions = &c.data.MacOS
+	case "linux":
+		archVersions = &c.data.Linux
+	default:
+		return nil
+	}
+	
+	switch arch {
+	case "x86_64":
+		return &archVersions.X86_64
+	case "aarch64":
+		return &archVersions.Aarch64
+	default:
+		return nil
+	}
 }
 
 func initDatabase(dbPath string) (*sql.DB, error) {
@@ -368,26 +412,73 @@ func main() {
 			return
 		}
 
+		// Get platform and architecture from query parameters
+		platform := r.URL.Query().Get("platform")
+		arch := r.URL.Query().Get("arch")
+		
+		// Validate platform
+		if platform == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error:   "Missing platform parameter",
+				Details: "Please specify platform: ?platform=windows, ?platform=macos, or ?platform=linux",
+			})
+			return
+		}
+
+		if platform != "windows" && platform != "macos" && platform != "linux" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error:   "Invalid platform",
+				Details: "Platform must be: windows, macos, or linux",
+			})
+			return
+		}
+
+		// Validate architecture
+		if arch == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error:   "Missing arch parameter",
+				Details: "Please specify arch: ?arch=x86_64 or ?arch=aarch64",
+			})
+			return
+		}
+
+		if arch != "x86_64" && arch != "aarch64" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error:   "Invalid architecture",
+				Details: "Architecture must be: x86_64 or aarch64",
+			})
+			return
+		}
+
 		// Extract client ID if provided
 		clientID := r.Header.Get("X-Client-ID")
 		clientIP := getClientIP(r)
 		userAgent := r.Header.Get("User-Agent")
+
+		// Get platform and arch specific version
+		versionInfo := config.GetPlatformArch(platform, arch)
+		if versionInfo == nil {
+			http.Error(w, "Version information not available", http.StatusInternalServerError)
+			return
+		}
 
 		// Log version check
 		if clientID != "" && validateClientID(clientID) {
 			_, err := db.Exec(`INSERT INTO version_checks 
 				(client_id, ip_address, user_agent, app_version) 
 				VALUES (?, ?, ?, ?)`,
-				clientID, clientIP, userAgent, "unknown")
+				clientID, clientIP, userAgent, platform+"-"+arch+"-"+versionInfo.Version)
 			if err != nil {
 				log.Printf("Error logging version check: %v", err)
 			}
-		}
-
-		versionInfo := config.Get()
-		if versionInfo == nil {
-			http.Error(w, "Version information not available", http.StatusInternalServerError)
-			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -512,8 +603,8 @@ func main() {
 
 	// Health check endpoint
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		versionInfo := config.Get()
-		if versionInfo == nil {
+		platformVersions := config.Get()
+		if platformVersions == nil {
 			http.Error(w, "Unhealthy", http.StatusServiceUnavailable)
 			return
 		}

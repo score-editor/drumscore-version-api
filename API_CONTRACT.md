@@ -14,12 +14,18 @@ Analytics requests require HMAC-SHA256 signature validation.
 
 ### Request
 ```http
-GET /api/version
+GET /api/version?platform={platform}&arch={arch}
 Headers:
   X-Client-ID: string (optional, recommended)
     - SHA-256 hash of machine identifier
     - 64 character hex string
     - Example: "a3f5b8c2d1e4f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+
+Query Parameters:
+  platform: string (required)
+    - Must be one of: "windows", "macos", "linux"
+  arch: string (required)
+    - Must be one of: "x86_64", "aarch64"
 ```
 
 ### Response
@@ -29,16 +35,40 @@ Content-Type: application/json
 
 {
   "version": "3.4.0",
-  "build": "2025.11.20.1",
-  "releaseDate": "2025-11-20T10:00:00Z",
-  "downloadUrl": "https://www.drummingondemand.com/drum-score-editor",
+  "build": "2025.11.23.4",
+  "releaseDate": "2025-11-23T10:00:00Z",
+  "downloadUrl": "https://drumscore.scot/downloads/macos-apple-silicon/DrumScore-3.4.0.dmg",
   "minSupportedVersion": "3.3.0",
-  "releaseNotes": "Bug fixes and performance improvements"
+  "releaseNotes": "macOS Apple Silicon release"
 }
 ```
 
 ### Error Responses
 ```http
+400 Bad Request
+{
+  "error": "Missing platform parameter",
+  "details": "Please specify platform: ?platform=windows, ?platform=macos, or ?platform=linux"
+}
+
+400 Bad Request
+{
+  "error": "Invalid platform",
+  "details": "Platform must be: windows, macos, or linux"
+}
+
+400 Bad Request
+{
+  "error": "Missing arch parameter",
+  "details": "Please specify arch: ?arch=x86_64 or ?arch=aarch64"
+}
+
+400 Bad Request
+{
+  "error": "Invalid architecture",
+  "details": "Architecture must be: x86_64 or aarch64"
+}
+
 429 Too Many Requests - Rate limit exceeded (60 requests/minute per IP)
 500 Internal Server Error - Server error
 ```
@@ -232,6 +262,73 @@ HttpRequest request = HttpRequest.newBuilder()
 ---
 
 ## Client Implementation Guidelines
+
+### Platform Detection
+
+```java
+private static String getPlatform() {
+    String osName = System.getProperty("os.name").toLowerCase();
+    
+    if (osName.contains("win")) {
+        return "windows";
+    } else if (osName.contains("mac")) {
+        return "macos";
+    } else if (osName.contains("linux")) {
+        return "linux";
+    } else {
+        // Fallback - default to linux for other Unix-like systems
+        return "linux";
+    }
+}
+
+private static String getArch() {
+    String osArch = System.getProperty("os.arch").toLowerCase();
+    
+    // Normalize architecture names
+    if (osArch.equals("amd64") || osArch.equals("x86_64") || osArch.equals("x64")) {
+        return "x86_64";
+    } else if (osArch.equals("aarch64") || osArch.equals("arm64")) {
+        return "aarch64";
+    } else {
+        // Fallback to x86_64 for unknown architectures
+        return "x86_64";
+    }
+}
+```
+
+### Version Check Example
+
+```java
+public VersionInfo checkVersion() throws Exception {
+    String platform = getPlatform();
+    String arch = getArch();
+    String clientId = generateClientId();
+    
+    String url = "https://support.drumscore.scot/api/version" +
+                 "?platform=" + platform + 
+                 "&arch=" + arch;
+    
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("X-Client-ID", clientId)
+        .timeout(Duration.ofSeconds(10))
+        .GET()
+        .build();
+        
+    HttpResponse<String> response = httpClient.send(request, 
+        HttpResponse.BodyHandlers.ofString());
+        
+    if (response.statusCode() == 200) {
+        return gson.fromJson(response.body(), VersionInfo.class);
+    } else if (response.statusCode() == 400) {
+        throw new IOException("Invalid platform or architecture parameter");
+    } else if (response.statusCode() == 429) {
+        throw new IOException("Rate limited - try again later");
+    } else {
+        throw new IOException("Failed to check version: " + response.statusCode());
+    }
+}
+```
 
 ### Batching Strategy
 - Collect events in memory queue
@@ -437,14 +534,20 @@ echo "Test Client ID: $TEST_CLIENT_ID"
 ```bash
 # With valid client ID (will be logged to analytics)
 curl -H "X-Client-ID: $TEST_CLIENT_ID" \
-  https://support.drumscore.scot/api/version
+  "https://support.drumscore.scot/api/version?platform=macos&arch=aarch64"
 
-# Or with a hardcoded example:
-curl -H "X-Client-ID: a3f5b8c2d1e4f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1" \
-  https://support.drumscore.scot/api/version
+# Test each platform and architecture combination
+curl "https://support.drumscore.scot/api/version?platform=windows&arch=x86_64"
+curl "https://support.drumscore.scot/api/version?platform=windows&arch=aarch64"
+curl "https://support.drumscore.scot/api/version?platform=macos&arch=x86_64"
+curl "https://support.drumscore.scot/api/version?platform=macos&arch=aarch64"
+curl "https://support.drumscore.scot/api/version?platform=linux&arch=x86_64"
+curl "https://support.drumscore.scot/api/version?platform=linux&arch=aarch64"
 
-# Without client ID (still works, but not tracked)
-curl https://support.drumscore.scot/api/version
+# Missing parameters (will return 400 error)
+curl "https://support.drumscore.scot/api/version?platform=macos"
+curl "https://support.drumscore.scot/api/version?arch=aarch64"
+curl "https://support.drumscore.scot/api/version"
 ```
 
 **Note:** Invalid client IDs are silently ignored - the API will still return version info, but won't log the request to analytics.
