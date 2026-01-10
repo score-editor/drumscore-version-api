@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DrumScore Version Check Analytics - Platform Stats</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .period-selector {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            padding: 20px;
+            background: #ecf0f1;
+            flex-wrap: wrap;
+        }
+
+        .period-btn {
+            padding: 10px 20px;
+            border: 2px solid #3498db;
+            background: white;
+            color: #3498db;
+            text-decoration: none;
+            border-radius: 4px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .period-btn:hover {
+            background: #3498db;
+            color: white;
+        }
+
+        .period-btn.active {
+            background: #3498db;
+            color: white;
+        }
+
+        .stats-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            padding: 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 15px;
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .stat-card .label {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #7f8c8d;
+            margin-bottom: 8px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-card .value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        .data-section {
+            padding: 30px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .data-section:last-of-type {
+            border-bottom: none;
+        }
+
+        .data-section h2 {
+            margin-bottom: 20px;
+            color: #2c3e50;
+            font-size: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        thead {
+            background: #34495e;
+            color: white;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        th {
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+        }
+
+        tbody tr:hover {
+            background: #f8f9fa;
+        }
+
+        .platform-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: capitalize;
+        }
+
+        .platform-windows { background: #0078d4; color: white; }
+        .platform-macos { background: #000000; color: white; }
+        .platform-linux { background: #FCC624; color: #333; }
+
+        .arch-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 8px;
+            font-size: 11px;
+            background: #ecf0f1;
+            color: #2c3e50;
+            margin-left: 8px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .version-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 8px;
+            font-size: 11px;
+            background: #9b59b6;
+            color: white;
+            font-family: 'Courier New', monospace;
+            margin-right: 8px;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+            font-style: italic;
+        }
+
+        footer {
+            text-align: center;
+            padding: 20px;
+            font-size: 12px;
+            color: #7f8c8d;
+            background: #f8f9fa;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        footer p {
+            margin: 5px 0;
+        }
+
+        .metric {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        @media (max-width: 768px) {
+            .period-selector {
+                flex-direction: column;
+            }
+
+            .period-btn {
+                width: 100%;
+            }
+
+            table {
+                font-size: 14px;
+            }
+
+            th, td {
+                padding: 8px;
+            }
+
+            .stat-card .value {
+                font-size: 24px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>DrumScore Version Check Analytics</h1>
+            <p>Platform, Architecture, and Version Distribution</p>
+        </header>
+
+        <div class="period-selector">
+            <a href="/platforms?period=hour" class="period-btn {{if eq .Period "hour"}}active{{end}}">Last Hour</a>
+            <a href="/platforms?period=day" class="period-btn {{if eq .Period "day"}}active{{end}}">Last 24 Hours</a>
+            <a href="/platforms?period=week" class="period-btn {{if eq .Period "week"}}active{{end}}">Last 7 Days</a>
+            <a href="/platforms?period=month" class="period-btn {{if eq .Period "month"}}active{{end}}">Last 30 Days</a>
+            <a href="/platforms?period=year" class="period-btn {{if eq .Period "year"}}active{{end}}">Last Year</a>
+        </div>
+
+        <div class="stats-summary">
+            <div class="stat-card">
+                <div class="label">Time Period</div>
+                <div class="value" style="font-size: 18px;">{{.PeriodLabel}}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Total Unique Clients</div>
+                <div class="value">{{.TotalClients}}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Total Version Checks</div>
+                <div class="value">{{.TotalChecks}}</div>
+            </div>
+        </div>
+
+        <div class="data-section">
+            <h2>Platform &amp; Architecture Breakdown</h2>
+
+            {{if .Stats}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Platform</th>
+                        <th class="metric">Unique Clients</th>
+                        <th class="metric">Total Checks</th>
+                        <th class="metric">Checks/Client</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Stats}}
+                    <tr>
+                        <td>
+                            <span class="platform-badge platform-{{.Platform}}">{{.Platform}}</span>
+                            <span class="arch-badge">{{.Arch}}</span>
+                        </td>
+                        <td class="metric">{{.UniqueClients}}</td>
+                        <td class="metric">{{.TotalChecks}}</td>
+                        <td class="metric">{{printf "%.2f" .ChecksPerClient}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="no-data">
+                <p>No platform data available for this time period.</p>
+            </div>
+            {{end}}
+        </div>
+
+        <div class="data-section">
+            <h2>Version Breakdown by Platform &amp; Architecture</h2>
+
+            {{if .VersionStats}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Version</th>
+                        <th>Platform</th>
+                        <th class="metric">Unique Clients</th>
+                        <th class="metric">Total Checks</th>
+                        <th class="metric">Checks/Client</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .VersionStats}}
+                    <tr>
+                        <td>
+                            <span class="version-badge">v{{.Version}}</span>
+                        </td>
+                        <td>
+                            <span class="platform-badge platform-{{.Platform}}">{{.Platform}}</span>
+                            <span class="arch-badge">{{.Arch}}</span>
+                        </td>
+                        <td class="metric">{{.UniqueClients}}</td>
+                        <td class="metric">{{.TotalChecks}}</td>
+                        <td class="metric">{{printf "%.2f" .ChecksPerClient}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="no-data">
+                <p>No version data available for this time period.</p>
+            </div>
+            {{end}}
+        </div>
+
+        <footer>
+            <p>Generated at {{.GeneratedAt}} UTC</p>
+            <p>This page automatically refreshes data on each visit</p>
+            <p>DrumScore Analytics System</p>
+        </footer>
+    </div>
+</body>
+</html>
