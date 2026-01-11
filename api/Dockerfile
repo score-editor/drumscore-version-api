@@ -6,8 +6,9 @@ RUN apk add --no-cache gcc musl-dev sqlite-dev
 
 WORKDIR /build
 
-# Copy go files
+# Copy go files and templates
 COPY main.go .
+COPY templates/ templates/
 
 # Initialize go module and add dependencies
 RUN go mod init version-api && \

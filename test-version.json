@@ -1,0 +1,56 @@
+{
+  "windows": {
+    "x86_64": {
+      "version": "1.0.0",
+      "build": "100",
+      "releaseDate": "2024-01-15",
+      "downloadUrl": "https://example.com/downloads/drumscore-1.0.0-windows-x64.exe",
+      "minSupportedVersion": "1.0.0",
+      "releaseNotes": "Initial release for Windows x64"
+    },
+    "aarch64": {
+      "version": "1.0.0",
+      "build": "100",
+      "releaseDate": "2024-01-15",
+      "downloadUrl": "https://example.com/downloads/drumscore-1.0.0-windows-arm64.exe",
+      "minSupportedVersion": "1.0.0",
+      "releaseNotes": "Initial release for Windows ARM64"
+    }
+  },
+  "macos": {
+    "x86_64": {
+      "version": "1.0.0",
+      "build": "100",
+      "releaseDate": "2024-01-15",
+      "downloadUrl": "https://example.com/downloads/drumscore-1.0.0-macos-x64.dmg",
+      "minSupportedVersion": "1.0.0",
+      "releaseNotes": "Initial release for macOS Intel"
+    },
+    "aarch64": {
+      "version": "1.0.0",
+      "build": "100",
+      "releaseDate": "2024-01-15",
+      "downloadUrl": "https://example.com/downloads/drumscore-1.0.0-macos-arm64.dmg",
+      "minSupportedVersion": "1.0.0",
+      "releaseNotes": "Initial release for macOS Apple Silicon"
+    }
+  },
+  "linux": {
+    "x86_64": {
+      "version": "1.0.0",
+      "build": "100",
+      "releaseDate": "2024-01-15",
+      "downloadUrl": "https://example.com/downloads/drumscore-1.0.0-linux-x64.AppImage",
+      "minSupportedVersion": "1.0.0",
+      "releaseNotes": "Initial release for Linux x64"
+    },
+    "aarch64": {
+      "version": "1.0.0",
+      "build": "100",
+      "releaseDate": "2024-01-15",
+      "downloadUrl": "https://example.com/downloads/drumscore-1.0.0-linux-arm64.AppImage",
+      "minSupportedVersion": "1.0.0",
+      "releaseNotes": "Initial release for Linux ARM64"
+    }
+  }
+}
