@@ -12,6 +12,9 @@ data/
 .env.local
 .analytics_secret
 
+# Server-specific config (copy from .example.json)
+config/version-multiplatform.json
+
 # Logs
 *.log
 

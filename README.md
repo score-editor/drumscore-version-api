@@ -16,6 +16,8 @@ See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
 ## Features
 
 - ✅ HTTPS with Let's Encrypt (auto-renewal)
+- ✅ Cloudflare Authenticated Origin Pulls (blocks direct access to origin)
+- ✅ Local network bypass for admin access via mDNS (droid1.local)
 - ✅ Rate limiting: 60 requests/minute per IP for version checks
 - ✅ Rate limiting: 1 request/minute per client for analytics batches
 - ✅ DDoS protection: connection limits, timeouts, request size limits
@@ -121,23 +123,36 @@ See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
 
 ```
 version-api/
-├── docker-compose.yml          # Container orchestration
-├── setup-letsencrypt.sh        # Certificate setup script
-├── .env.example                # Example environment variables
-├── API_CONTRACT.md             # API documentation for client developers
+├── docker-compose.yml                    # Container orchestration
+├── setup-letsencrypt.sh                  # Certificate setup script
+├── .env.example                          # Example environment variables
+├── API_CONTRACT.md                       # API documentation for client developers
 ├── config/
-│   └── version-multiplatform.json  # ← Edit this to update version (per platform)
+│   ├── version-multiplatform.example.json  # Template config (tracked in git)
+│   └── version-multiplatform.json          # Server config (git-ignored, create from example)
 ├── nginx/
-│   └── nginx.conf              # Nginx configuration
+│   ├── nginx.conf                        # Nginx configuration
+│   └── cloudflare-origin-pull-ca.pem     # Cloudflare mTLS certificate
 ├── api/
-│   ├── Dockerfile              # Go API container build
-│   └── main.go                 # API server code
-├── data/                       # Created automatically
-│   └── analytics.db            # SQLite database (created on first run)
-└── letsencrypt/                # Let's Encrypt certificates (created by setup)
+│   ├── Dockerfile                        # Go API container build
+│   └── main.go                           # API server code
+├── data/                                 # Created automatically
+│   └── analytics.db                      # SQLite database (created on first run)
+└── letsencrypt/                          # Let's Encrypt certificates (created by setup)
 ```
 
 ## Usage
+
+### Initial Configuration
+
+On first deployment, create the config file from the example:
+
+```bash
+cp config/version-multiplatform.example.json config/version-multiplatform.json
+nano config/version-multiplatform.json
+```
+
+The actual config file is git-ignored to prevent conflicts when pulling updates.
 
 ### Updating Version Information
 
@@ -293,6 +308,30 @@ sudo systemctl start version-api
 ```
 
 ## Security Features
+
+### Cloudflare Authenticated Origin Pulls
+
+The server only accepts connections from Cloudflare, preventing direct access to the origin IP. This provides:
+- Protection against DDoS attacks bypassing Cloudflare
+- Ensures all traffic benefits from Cloudflare's security features
+- mTLS verification of Cloudflare's identity
+
+**Setup in Cloudflare Dashboard:**
+1. Log into [Cloudflare Dashboard](https://dash.cloudflare.com)
+2. Select your domain
+3. Go to **SSL/TLS** → **Origin Server**
+4. Enable **Authenticated Origin Pulls**
+
+### Local Network Access
+
+For admin access to the analytics dashboard from your local network, the server accepts connections from local IPs (10.x.x.x, 172.16.x.x, 192.168.x.x) without requiring Cloudflare certificates.
+
+Access via mDNS:
+```
+https://droid1.local/platforms
+```
+
+You'll see a certificate warning (the cert is for support.drumscore.scot) - accept it to proceed.
 
 ### DDoS Protection
 - Connection limits: 10 concurrent per IP
