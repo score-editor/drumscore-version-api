@@ -20,6 +20,10 @@ Headers:
     - SHA-256 hash of machine identifier
     - 64 character hex string
     - Example: "a3f5b8c2d1e4f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+  X-App-Version: string (optional, recommended)
+    - Current installed app version
+    - Semantic version format (e.g., "3.3.0", "3.4.0")
+    - Used for version distribution analytics
 
 Query Parameters:
   platform: string (required)
@@ -299,18 +303,19 @@ private static String getArch() {
 ### Version Check Example
 
 ```java
-public VersionInfo checkVersion() throws Exception {
+public VersionInfo checkVersion(String currentAppVersion) throws Exception {
     String platform = getPlatform();
     String arch = getArch();
     String clientId = generateClientId();
-    
+
     String url = "https://support.drumscore.scot/api/version" +
-                 "?platform=" + platform + 
+                 "?platform=" + platform +
                  "&arch=" + arch;
-    
+
     HttpRequest request = HttpRequest.newBuilder()
         .uri(URI.create(url))
         .header("X-Client-ID", clientId)
+        .header("X-App-Version", currentAppVersion)
         .timeout(Duration.ofSeconds(10))
         .GET()
         .build();
@@ -532,8 +537,9 @@ echo "Test Client ID: $TEST_CLIENT_ID"
 
 ### Test Version Check
 ```bash
-# With valid client ID (will be logged to analytics)
+# With valid client ID and app version (will be logged to analytics)
 curl -H "X-Client-ID: $TEST_CLIENT_ID" \
+     -H "X-App-Version: 3.3.0" \
   "https://support.drumscore.scot/api/version?platform=macos&arch=aarch64"
 
 # Test each platform and architecture combination

@@ -735,6 +735,7 @@ func main() {
 		clientID := r.Header.Get("X-Client-ID")
 		clientIP := getClientIP(r)
 		userAgent := r.Header.Get("User-Agent")
+		clientVersion := r.Header.Get("X-App-Version")
 
 		// Get platform and arch specific version
 		versionInfo := config.GetPlatformArch(platform, arch)
@@ -745,10 +746,10 @@ func main() {
 
 		// Log version check
 		if clientID != "" && validateClientID(clientID) {
-			_, err := db.Exec(`INSERT INTO version_checks 
-				(client_id, ip_address, user_agent, app_version) 
+			_, err := db.Exec(`INSERT INTO version_checks
+				(client_id, ip_address, user_agent, app_version)
 				VALUES (?, ?, ?, ?)`,
-				clientID, clientIP, userAgent, platform+"-"+arch+"-"+versionInfo.Version)
+				clientID, clientIP, userAgent, platform+"-"+arch+"-"+clientVersion)
 			if err != nil {
 				log.Printf("Error logging version check: %v", err)
 			}
