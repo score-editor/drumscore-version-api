@@ -45,14 +45,13 @@
 - `docker-compose.yml` - Container orchestration
 - `nginx/nginx.conf` - Reverse proxy with multi-service support
 - `setup-letsencrypt.sh` - Certificate setup
-- `config/version.json` - Version info (editable)
+- `config/version-multiplatform.json` - Version info per platform (editable)
 
 ### Documentation
 - `README.md` - General documentation
 - `API_CONTRACT.md` - API specification for client developers
 - `MULTI_SERVICE_GUIDE.md` - Adding additional services
 - `UPGRADE.md` - Upgrade instructions
-- `MIGRATION.md` - Domain migration guide
 
 ### Scripts
 - `add-service.sh` - Helper for adding new services

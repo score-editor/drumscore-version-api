@@ -17,7 +17,7 @@ See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
 
 - ✅ HTTPS with Let's Encrypt (auto-renewal)
 - ✅ Rate limiting: 60 requests/minute per IP for version checks
-- ✅ Rate limiting: 12 requests/hour per client for analytics batches
+- ✅ Rate limiting: 1 request/minute per client for analytics batches
 - ✅ DDoS protection: connection limits, timeouts, request size limits
 - ✅ Zero-downtime version updates (edit config file)
 - ✅ Analytics collection with SQLite database
@@ -126,7 +126,7 @@ version-api/
 ├── .env.example                # Example environment variables
 ├── API_CONTRACT.md             # API documentation for client developers
 ├── config/
-│   └── version.json            # ← Edit this to update version
+│   └── version-multiplatform.json  # ← Edit this to update version (per platform)
 ├── nginx/
 │   └── nginx.conf              # Nginx configuration
 ├── api/
@@ -144,18 +144,36 @@ version-api/
 Simply edit the config file - changes take effect within 30 seconds:
 
 ```bash
-nano config/version.json
+nano config/version-multiplatform.json
 ```
 
-Example:
+Example (per-platform format):
 ```json
 {
-  "version": "1.2.3",
-  "build": "2025.11.25.1",
-  "releaseDate": "2025-11-25T14:30:00Z",
-  "downloadUrl": "https://drumscore.scot/downloads/app-1.2.3.apk",
-  "minSupportedVersion": "1.0.0",
-  "releaseNotes": "Bug fixes and performance improvements"
+  "windows": {
+    "version": "3.4.0",
+    "build": "2025.11.23.1",
+    "releaseDate": "2025-11-23T10:00:00Z",
+    "downloadUrl": "https://drumscore.scot/downloads/windows/DrumScore-3.4.0.exe",
+    "minSupportedVersion": "3.3.0",
+    "releaseNotes": "Bug fixes and performance improvements"
+  },
+  "macos": {
+    "version": "3.4.0",
+    "build": "2025.11.23.2",
+    "releaseDate": "2025-11-23T10:00:00Z",
+    "downloadUrl": "https://drumscore.scot/downloads/macos/DrumScore-3.4.0.dmg",
+    "minSupportedVersion": "3.3.0",
+    "releaseNotes": "Bug fixes and performance improvements"
+  },
+  "linux": {
+    "version": "3.4.0",
+    "build": "2025.11.23.3",
+    "releaseDate": "2025-11-23T10:00:00Z",
+    "downloadUrl": "https://drumscore.scot/downloads/linux/DrumScore-3.4.0.AppImage",
+    "minSupportedVersion": "3.3.0",
+    "releaseNotes": "Bug fixes and performance improvements"
+  }
 }
 ```
 
@@ -415,7 +433,7 @@ Edit `nginx/nginx.conf`:
 # Change rate (currently 60r/m = 60 requests per minute)
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=120r/m;
 
-# Analytics rate (currently 12r/h = one every 5 minutes)
+# Analytics rate (currently 1r/m = one per minute)
 limit_req_zone $http_x_client_id zone=analytics_limit:10m rate=24r/h;
 ```
 Then: `docker compose restart nginx`

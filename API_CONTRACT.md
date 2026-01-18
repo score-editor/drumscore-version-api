@@ -224,7 +224,7 @@ Use these standardized feature names for consistency:
 ## Rate Limits
 
 - **Version Check**: 60 requests/minute per IP, burst 20
-- **Analytics Batch**: 12 requests/hour per client ID (one every 5 minutes), burst 5
+- **Analytics Batch**: 1 request/minute per client ID, burst 5
 - **Health Check**: No limit
 
 ---

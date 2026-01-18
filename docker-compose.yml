@@ -36,7 +36,7 @@ services:
       - ./config:/app/config:ro
       - ./data:/app/data
     environment:
-      - CONFIG_PATH=/app/config/version.json
+      - CONFIG_PATH=/app/config/version-multiplatform.json
       - DB_PATH=/app/data/analytics.db
       - ANALYTICS_SECRET=${ANALYTICS_SECRET:-}
     networks:
