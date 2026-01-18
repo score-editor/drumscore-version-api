@@ -109,7 +109,7 @@ Edit `config/version.json` and update specific platform/arch combinations:
       "version": "3.5.0",
       "build": "2025.11.24.1",
       "releaseDate": "2025-11-24T10:00:00Z",
-      "downloadUrl": "https://drumscore.scot/downloads/macos-apple-silicon/DrumScore-3.5.0.dmg",
+      "downloadUrl": "https://drumscore.scot",
       "minSupportedVersion": "3.3.0",
       "releaseNotes": "New features for Apple Silicon"
     }

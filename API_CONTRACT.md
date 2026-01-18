@@ -37,7 +37,7 @@ Content-Type: application/json
   "version": "3.4.0",
   "build": "2025.11.23.4",
   "releaseDate": "2025-11-23T10:00:00Z",
-  "downloadUrl": "https://drumscore.scot/downloads/macos-apple-silicon/DrumScore-3.4.0.dmg",
+  "downloadUrl": "https://drumscore.scot",
   "minSupportedVersion": "3.3.0",
   "releaseNotes": "macOS Apple Silicon release"
 }

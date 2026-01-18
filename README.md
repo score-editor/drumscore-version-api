@@ -154,7 +154,7 @@ Example (per-platform format):
     "version": "3.4.0",
     "build": "2025.11.23.1",
     "releaseDate": "2025-11-23T10:00:00Z",
-    "downloadUrl": "https://drumscore.scot/downloads/windows/DrumScore-3.4.0.exe",
+    "downloadUrl": "https://drumscore.scot",
     "minSupportedVersion": "3.3.0",
     "releaseNotes": "Bug fixes and performance improvements"
   },
@@ -162,7 +162,7 @@ Example (per-platform format):
     "version": "3.4.0",
     "build": "2025.11.23.2",
     "releaseDate": "2025-11-23T10:00:00Z",
-    "downloadUrl": "https://drumscore.scot/downloads/macos/DrumScore-3.4.0.dmg",
+    "downloadUrl": "https://drumscore.scot",
     "minSupportedVersion": "3.3.0",
     "releaseNotes": "Bug fixes and performance improvements"
   },
@@ -170,7 +170,7 @@ Example (per-platform format):
     "version": "3.4.0",
     "build": "2025.11.23.3",
     "releaseDate": "2025-11-23T10:00:00Z",
-    "downloadUrl": "https://drumscore.scot/downloads/linux/DrumScore-3.4.0.AppImage",
+    "downloadUrl": "https://drumscore.scot",
     "minSupportedVersion": "3.3.0",
     "releaseNotes": "Bug fixes and performance improvements"
   }
@@ -196,7 +196,7 @@ Response:
   "version": "1.0.0",
   "build": "2025.11.20.1",
   "releaseDate": "2025-11-20T10:00:00Z",
-  "downloadUrl": "https://drumscore.scot/downloads/app-1.0.0.apk",
+  "downloadUrl": "https://drumscore.scot",
   "minSupportedVersion": "1.0.0",
   "releaseNotes": "Initial release"
 }

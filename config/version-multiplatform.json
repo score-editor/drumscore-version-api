@@ -3,7 +3,7 @@
     "version": "3.4.0",
     "build": "2025.11.23.1",
     "releaseDate": "2025-11-23T10:00:00Z",
-    "downloadUrl": "https://drumscore.scot/downloads/windows/DrumScore-3.4.0.exe",
+    "downloadUrl": "https://drumscore.scot",
     "minSupportedVersion": "3.3.0",
     "releaseNotes": "Initial Windows release"
   },
@@ -11,7 +11,7 @@
     "version": "3.4.0",
     "build": "2025.11.23.2",
     "releaseDate": "2025-11-23T10:00:00Z",
-    "downloadUrl": "https://drumscore.scot/downloads/macos/DrumScore-3.4.0.dmg",
+    "downloadUrl": "https://drumscore.scot",
     "minSupportedVersion": "3.3.0",
     "releaseNotes": "Initial macOS release"
   },
@@ -19,7 +19,7 @@
     "version": "3.4.0",
     "build": "2025.11.23.3",
     "releaseDate": "2025-11-23T10:00:00Z",
-    "downloadUrl": "https://drumscore.scot/downloads/linux/DrumScore-3.4.0.AppImage",
+    "downloadUrl": "https://drumscore.scot",
     "minSupportedVersion": "3.3.0",
     "releaseNotes": "Initial Linux release"
   }
