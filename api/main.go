@@ -1012,7 +1012,10 @@ func main() {
 			WHERE timestamp >= %s
 				AND client_id IS NOT NULL
 				AND client_id != ''
+				AND app_version LIKE '%%-%%-%%'
+				AND app_version NOT LIKE '%%-'
 			GROUP BY platform, arch, version
+			HAVING version != ''
 			ORDER BY version DESC, platform, arch
 		`, timeFilter)
 
