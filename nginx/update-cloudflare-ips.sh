@@ -26,7 +26,8 @@ if [ -f "$CONF_FILE" ] && cmp -s "$TMP_FILE" "$CONF_FILE"; then
     rm "$TMP_FILE"
 else
     echo "Cloudflare IPs updated, reloading nginx"
-    mv "$TMP_FILE" "$CONF_FILE"
+    cat "$TMP_FILE" > "$CONF_FILE"
+    rm "$TMP_FILE"
     # Signal nginx to reload (if nginx container is running)
     if [ -n "$NGINX_CONTAINER" ]; then
         docker kill -s HUP "$NGINX_CONTAINER" 2>/dev/null || true
