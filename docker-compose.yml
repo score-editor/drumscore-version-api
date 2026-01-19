@@ -57,7 +57,7 @@ services:
     environment:
       - NGINX_CONTAINER=version-api-nginx
     entrypoint: /bin/sh
-    command: -c 'apk add --no-cache docker-cli && /update.sh && while true; do sleep 86400; /update.sh; done'
+    command: -c 'apk add --no-cache docker-cli && sh /update.sh && while true; do sleep 86400; sh /update.sh; done'
     networks:
       - version-api-network
 
