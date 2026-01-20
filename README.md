@@ -4,9 +4,18 @@ Production-ready HTTPS API endpoint for app version checking with DDoS protectio
 
 ## Architecture
 
+```
+Client → Cloudflare → Nginx → Go API
+```
+
+- **Cloudflare**: CDN and security layer (DNS proxy mode)
+  - DDoS protection and WAF
+  - Provides `CF-Connecting-IP` header (real client IP)
+  - Provides `CF-IPCountry` header (client country code)
 - **Nginx**: Reverse proxy with TLS termination, rate limiting, DDoS protection
   - Routes multiple subdomains to different backend services
   - Each service gets its own SSL certificate
+  - Validates requests via Cloudflare Authenticated Origin Pulls
 - **Go API**: Lightweight version and analytics service (support.drumscore.scot)
 - **Certbot**: Automatic Let's Encrypt certificate management for all domains
 - **Multi-Service Ready**: Easy to add new services (license, auth, etc.) on separate subdomains
@@ -350,14 +359,20 @@ You'll see a certificate warning (the cert is for support.drumscore.scot) - acce
 - X-Content-Type-Options: nosniff
 - X-XSS-Protection: enabled
 
+### Data Retention
+
+- **Detailed records** (including IP addresses): Kept for **1 year**
+- After 1 year, records are aggregated into monthly summaries (counts and averages only) and detailed records are purged
+- Aggregated data does not contain IP addresses or other personal identifiers
+
 ### Monitoring
 
-### Check if services are running
+**Check if services are running:**
 ```bash
 docker compose ps
 ```
 
-### View resource usage
+**View resource usage:**
 ```bash
 docker stats
 ```
@@ -404,6 +419,16 @@ sqlite3 ~/drumscore-version-api/data/analytics.db \
   "SELECT os_family, COUNT(DISTINCT client_id) as users
    FROM analytics_events
    GROUP BY os_family;"
+```
+
+**Users by country:**
+```bash
+sqlite3 ~/drumscore-version-api/data/analytics.db \
+  "SELECT country, COUNT(DISTINCT client_id) as users
+   FROM version_checks
+   WHERE country IS NOT NULL AND country != ''
+   GROUP BY country
+   ORDER BY users DESC;"
 ```
 
 **Daily active users:**

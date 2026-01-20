@@ -618,8 +618,14 @@ func scheduleAggregationJob(db *sql.DB) {
 }
 
 func getClientIP(r *http.Request) string {
-	// Check X-Real-IP header first (set by nginx)
-	ip := r.Header.Get("X-Real-IP")
+	// Check CF-Connecting-IP first (set by Cloudflare)
+	ip := r.Header.Get("CF-Connecting-IP")
+	if ip != "" {
+		return ip
+	}
+
+	// Check X-Real-IP header (set by nginx)
+	ip = r.Header.Get("X-Real-IP")
 	if ip != "" {
 		return ip
 	}
@@ -634,6 +640,12 @@ func getClientIP(r *http.Request) string {
 
 	// Fallback to RemoteAddr
 	return r.RemoteAddr
+}
+
+func getClientCountry(r *http.Request) string {
+	// CF-IPCountry contains ISO 3166-1 alpha-2 country code (e.g., "US", "GB")
+	// Returns "XX" for unknown, "T1" for Tor
+	return r.Header.Get("CF-IPCountry")
 }
 
 func main() {
@@ -734,6 +746,7 @@ func main() {
 		// Extract client ID if provided
 		clientID := r.Header.Get("X-Client-ID")
 		clientIP := getClientIP(r)
+		clientCountry := getClientCountry(r)
 		userAgent := r.Header.Get("User-Agent")
 		clientVersion := r.Header.Get("X-App-Version")
 
@@ -747,9 +760,9 @@ func main() {
 		// Log version check
 		if clientID != "" && validateClientID(clientID) {
 			_, err := db.Exec(`INSERT INTO version_checks
-				(client_id, ip_address, user_agent, app_version)
-				VALUES (?, ?, ?, ?)`,
-				clientID, clientIP, userAgent, platform+"-"+arch+"-"+clientVersion)
+				(client_id, ip_address, country, user_agent, app_version)
+				VALUES (?, ?, ?, ?, ?)`,
+				clientID, clientIP, clientCountry, userAgent, platform+"-"+arch+"-"+clientVersion)
 			if err != nil {
 				log.Printf("Error logging version check: %v", err)
 			}
@@ -818,8 +831,8 @@ func main() {
 			return
 		}
 
-		// Get client IP for country lookup (simplified - just store IP for now)
-		clientIP := getClientIP(r)
+		// Get client country from Cloudflare header
+		clientCountry := getClientCountry(r)
 
 		// Store events in database
 		tx, err := db.Begin()
@@ -837,13 +850,13 @@ func main() {
 			eventTime := time.Unix(event.Timestamp/1000, 0)
 			metadataJSON, _ := json.Marshal(event.Metadata)
 
-			_, err := tx.Exec(`INSERT INTO analytics_events 
-				(timestamp, client_id, event_type, feature_name, metadata, 
-				 app_version, os_family, os_version, os_arch, country, session_start) 
+			_, err := tx.Exec(`INSERT INTO analytics_events
+				(timestamp, client_id, event_type, feature_name, metadata,
+				 app_version, os_family, os_version, os_arch, country, session_start)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				eventTime, batch.ClientID, event.EventType, event.FeatureName,
 				string(metadataJSON), batch.AppVersion, batch.OS.Family,
-				batch.OS.Version, batch.OS.Arch, clientIP, sessionStart)
+				batch.OS.Version, batch.OS.Arch, clientCountry, sessionStart)
 
 			if err != nil {
 				tx.Rollback()
