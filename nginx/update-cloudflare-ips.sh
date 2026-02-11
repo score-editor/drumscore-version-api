@@ -4,17 +4,26 @@ set -e
 CONF_FILE="/data/cloudflare-ips.conf"
 TMP_FILE="/tmp/cloudflare-ips.conf.tmp"
 
+# Fetch IP ranges first - abort if either fetch fails
+IPV4=$(wget -qO- https://www.cloudflare.com/ips-v4) || { echo "ERROR: Failed to fetch Cloudflare IPv4 ranges"; exit 1; }
+IPV6=$(wget -qO- https://www.cloudflare.com/ips-v6) || { echo "ERROR: Failed to fetch Cloudflare IPv6 ranges"; exit 1; }
+
+# Validate we got actual data (expect at least 10 IPv4 ranges)
+IPV4_COUNT=$(echo "$IPV4" | wc -l)
+if [ "$IPV4_COUNT" -lt 10 ]; then
+    echo "ERROR: Only got $IPV4_COUNT IPv4 ranges (expected 10+), aborting"
+    exit 1
+fi
+
 echo "# Auto-generated Cloudflare IP ranges - $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMP_FILE"
 echo "geo \$is_cloudflare {" >> "$TMP_FILE"
 echo "    default 0;" >> "$TMP_FILE"
 
-# Fetch IPv4 ranges
-for ip in $(wget -qO- https://www.cloudflare.com/ips-v4); do
+for ip in $IPV4; do
     echo "    $ip 1;" >> "$TMP_FILE"
 done
 
-# Fetch IPv6 ranges
-for ip in $(wget -qO- https://www.cloudflare.com/ips-v6); do
+for ip in $IPV6; do
     echo "    $ip 1;" >> "$TMP_FILE"
 done
 

@@ -94,22 +94,16 @@ See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
    - Use email: alan@drumscore.scot
    - Store certificates in `./letsencrypt/`
 
-5. **Configure Analytics Secret** (Optional but Recommended)
+5. **Configure Analytics Secret** (Optional)
    ```bash
    # Generate a strong secret
    openssl rand -base64 32 > .analytics_secret
-   
+
    # Create .env file
    echo "ANALYTICS_SECRET=$(cat .analytics_secret)" > .env
-   
-   # Keep this secret safe and use the same value in your client app
    ```
-   
-   **CRITICAL:** 
-   - Back up this secret in a secure location (password manager, etc.)
-   - You'll need it when implementing the Java client
-   - Once clients are deployed, this secret becomes permanent
-   - Never rotate without updating all clients simultaneously
+
+   This secret is used for HMAC-SHA256 signature validation on the `/api/analytics/batch` endpoint. The analytics batch endpoint is currently not used by any clients.
 
 6. **Start the services**
    ```bash
@@ -439,23 +433,6 @@ sqlite3 ~/drumscore-version-api/data/analytics.db \
    WHERE timestamp > datetime('now', '-30 days')
    GROUP BY DATE(timestamp)
    ORDER BY date DESC;"
-```
-
-### Test from your Flutter app
-```dart
-Future<Map<String, dynamic>> checkVersion() async {
-  final response = await http.get(
-    Uri.parse('https://support.drumscore.scot/api/version')
-  );
-  
-  if (response.statusCode == 200) {
-    return json.decode(response.body);
-  } else if (response.statusCode == 429) {
-    throw Exception('Rate limited - try again later');
-  } else {
-    throw Exception('Failed to check version');
-  }
-}
 ```
 
 ## Troubleshooting
