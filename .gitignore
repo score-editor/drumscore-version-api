@@ -22,6 +22,9 @@ config/version-multiplatform.json
 .DS_Store
 Thumbs.db
 
+# Runtime-generated nginx config (created by cloudflare-updater container)
+nginx/cloudflare-ips.conf
+
 # Editor files
 .vscode/
 .idea/
