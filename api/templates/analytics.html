@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DrumScore Feature Usage Analytics</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        header {
+            background: #2c3e50;
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .nav-bar {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            padding: 12px 20px;
+            background: #1a252f;
+        }
+
+        .nav-bar a {
+            color: #95a5a6;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            padding: 4px 12px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .nav-bar a:hover {
+            color: white;
+        }
+
+        .nav-bar a.active {
+            color: white;
+            background: rgba(255,255,255,0.1);
+        }
+
+        .period-selector {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            padding: 20px;
+            background: #ecf0f1;
+            flex-wrap: wrap;
+        }
+
+        .period-btn {
+            padding: 10px 20px;
+            border: 2px solid #3498db;
+            background: white;
+            color: #3498db;
+            text-decoration: none;
+            border-radius: 4px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .period-btn:hover {
+            background: #3498db;
+            color: white;
+        }
+
+        .period-btn.active {
+            background: #3498db;
+            color: white;
+        }
+
+        .stats-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            padding: 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 15px;
+            background: white;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .stat-card .label {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #7f8c8d;
+            margin-bottom: 8px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-card .value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        .stat-card .value.small {
+            font-size: 18px;
+        }
+
+        .data-section {
+            padding: 30px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .data-section:last-of-type {
+            border-bottom: none;
+        }
+
+        .data-section h2 {
+            margin-bottom: 20px;
+            color: #2c3e50;
+            font-size: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        thead {
+            background: #34495e;
+            color: white;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        th {
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+        }
+
+        tbody tr:hover {
+            background: #f8f9fa;
+        }
+
+        .category-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .category-File { background: #3498db; color: white; }
+        .category-Notation { background: #e74c3c; color: white; }
+        .category-Playback { background: #2ecc71; color: white; }
+        .category-View { background: #9b59b6; color: white; }
+        .category-Tools { background: #f39c12; color: white; }
+        .category-GraceNotes { background: #1abc9c; color: white; }
+        .category-Staff { background: #e67e22; color: white; }
+        .category-Part { background: #16a085; color: white; }
+        .category-Edit { background: #8e44ad; color: white; }
+        .category-Other { background: #95a5a6; color: white; }
+
+        .feature-name {
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-height: 400px;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+            font-style: italic;
+        }
+
+        footer {
+            text-align: center;
+            padding: 20px;
+            font-size: 12px;
+            color: #7f8c8d;
+            background: #f8f9fa;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        footer p {
+            margin: 5px 0;
+        }
+
+        .metric {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .breakdown-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+        }
+
+        .breakdown-card {
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .breakdown-card h3 {
+            padding: 12px 15px;
+            background: #f8f9fa;
+            font-size: 14px;
+            color: #2c3e50;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .breakdown-card table {
+            margin-top: 0;
+        }
+
+        @media (max-width: 768px) {
+            .period-selector {
+                flex-direction: column;
+            }
+
+            .period-btn {
+                width: 100%;
+            }
+
+            table {
+                font-size: 14px;
+            }
+
+            th, td {
+                padding: 8px;
+            }
+
+            .stat-card .value {
+                font-size: 24px;
+            }
+
+            .breakdown-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>DrumScore Feature Usage Analytics</h1>
+            <p>Feature usage, sessions, and breakdown data</p>
+        </header>
+
+        <div class="nav-bar">
+            <a href="/platforms">Platform Stats</a>
+            <a href="/analytics" class="active">Feature Analytics</a>
+        </div>
+
+        <div class="period-selector">
+            <a href="/analytics?period=hour" class="period-btn {{if eq .Period "hour"}}active{{end}}">Last Hour</a>
+            <a href="/analytics?period=day" class="period-btn {{if eq .Period "day"}}active{{end}}">Last 24 Hours</a>
+            <a href="/analytics?period=week" class="period-btn {{if eq .Period "week"}}active{{end}}">Last 7 Days</a>
+            <a href="/analytics?period=month" class="period-btn {{if eq .Period "month"}}active{{end}}">Last 30 Days</a>
+            <a href="/analytics?period=year" class="period-btn {{if eq .Period "year"}}active{{end}}">Last Year</a>
+        </div>
+
+        <div class="stats-summary">
+            <div class="stat-card">
+                <div class="label">Time Period</div>
+                <div class="value small">{{.PeriodLabel}}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Total Feature Uses</div>
+                <div class="value">{{.TotalUses}}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Unique Clients</div>
+                <div class="value">{{.TotalUniqueClients}}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Total Sessions</div>
+                <div class="value">{{.Sessions.TotalSessions}}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Avg Session Duration</div>
+                <div class="value small">{{printf "%.0f" .Sessions.AvgSessionDuration}}s</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Sessions / Client</div>
+                <div class="value small">{{printf "%.1f" .Sessions.SessionsPerClient}}</div>
+            </div>
+        </div>
+
+        <!-- Feature Popularity Table -->
+        <div class="data-section">
+            <h2>Feature Popularity</h2>
+
+            {{if .FeatureStats}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Feature</th>
+                        <th>Category</th>
+                        <th class="metric">Total Uses</th>
+                        <th class="metric">Unique Clients</th>
+                        <th class="metric">Uses / Client</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range $i, $stat := .FeatureStats}}
+                    <tr>
+                        <td>{{$i}}</td>
+                        <td><span class="feature-name">{{$stat.FeatureName}}</span></td>
+                        <td><span class="category-badge category-{{$stat.Category}}">{{$stat.Category}}</span></td>
+                        <td class="metric">{{$stat.TotalUses}}</td>
+                        <td class="metric">{{$stat.UniqueClients}}</td>
+                        <td class="metric">{{printf "%.1f" $stat.UsesPerClient}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="no-data">
+                <p>No feature usage data available for this time period.</p>
+            </div>
+            {{end}}
+        </div>
+
+        <!-- Usage Over Time Chart -->
+        <div class="data-section">
+            <h2>Usage Over Time ({{.TimeGranularity}} buckets)</h2>
+
+            {{if .FeatureStats}}
+            <div class="chart-container">
+                <canvas id="usageChart"></canvas>
+            </div>
+            {{else}}
+            <div class="no-data">
+                <p>No time-series data available for this time period.</p>
+            </div>
+            {{end}}
+        </div>
+
+        <!-- Breakdowns -->
+        <div class="data-section">
+            <h2>Breakdowns</h2>
+
+            <div class="breakdown-grid">
+                <!-- Version Breakdown -->
+                <div class="breakdown-card">
+                    <h3>By App Version</h3>
+                    {{if .VersionBreakdown}}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Version</th>
+                                <th>Feature</th>
+                                <th class="metric">Uses</th>
+                                <th class="metric">Clients</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{range .VersionBreakdown}}
+                            <tr>
+                                <td>{{.Dimension}}</td>
+                                <td><span class="feature-name">{{.FeatureName}}</span></td>
+                                <td class="metric">{{.TotalUses}}</td>
+                                <td class="metric">{{.UniqueClients}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                    {{else}}
+                    <div class="no-data"><p>No version data available.</p></div>
+                    {{end}}
+                </div>
+
+                <!-- OS Breakdown -->
+                <div class="breakdown-card">
+                    <h3>By Operating System</h3>
+                    {{if .OSBreakdown}}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>OS</th>
+                                <th>Feature</th>
+                                <th class="metric">Uses</th>
+                                <th class="metric">Clients</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{range .OSBreakdown}}
+                            <tr>
+                                <td>{{.Dimension}}</td>
+                                <td><span class="feature-name">{{.FeatureName}}</span></td>
+                                <td class="metric">{{.TotalUses}}</td>
+                                <td class="metric">{{.UniqueClients}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                    {{else}}
+                    <div class="no-data"><p>No OS data available.</p></div>
+                    {{end}}
+                </div>
+
+                <!-- Country Breakdown -->
+                <div class="breakdown-card">
+                    <h3>By Country</h3>
+                    {{if .CountryBreakdown}}
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Country</th>
+                                <th>Feature</th>
+                                <th class="metric">Uses</th>
+                                <th class="metric">Clients</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{range .CountryBreakdown}}
+                            <tr>
+                                <td>{{.Dimension}}</td>
+                                <td><span class="feature-name">{{.FeatureName}}</span></td>
+                                <td class="metric">{{.TotalUses}}</td>
+                                <td class="metric">{{.UniqueClients}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                    {{else}}
+                    <div class="no-data"><p>No country data available.</p></div>
+                    {{end}}
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Generated at {{.GeneratedAt}} UTC</p>
+            <p>This page automatically refreshes data on each visit</p>
+            <p>DrumScore Analytics System</p>
+        </footer>
+    </div>
+
+    {{if .FeatureStats}}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script>
+        (function() {
+            var rawData = {{safeJS .TimeBucketsJSON}};
+            if (!rawData || rawData.length === 0) return;
+
+            // Collect all unique buckets and features
+            var bucketSet = {};
+            var featureUses = {};
+            for (var i = 0; i < rawData.length; i++) {
+                var d = rawData[i];
+                bucketSet[d.Bucket] = true;
+                if (!featureUses[d.FeatureName]) featureUses[d.FeatureName] = 0;
+                featureUses[d.FeatureName] += d.TotalUses;
+            }
+
+            var buckets = Object.keys(bucketSet).sort();
+
+            // Get top 8 features by total uses
+            var featureList = Object.keys(featureUses).sort(function(a, b) {
+                return featureUses[b] - featureUses[a];
+            });
+            var topFeatures = featureList.slice(0, 8);
+            var otherFeatures = featureList.slice(8);
+
+            // Build lookup: bucket -> feature -> uses
+            var lookup = {};
+            for (var i = 0; i < rawData.length; i++) {
+                var d = rawData[i];
+                if (!lookup[d.Bucket]) lookup[d.Bucket] = {};
+                lookup[d.Bucket][d.FeatureName] = d.TotalUses;
+            }
+
+            var colors = [
+                '#3498db', '#e74c3c', '#2ecc71', '#9b59b6',
+                '#f39c12', '#1abc9c', '#e67e22', '#34495e'
+            ];
+
+            var datasets = [];
+            for (var fi = 0; fi < topFeatures.length; fi++) {
+                var feature = topFeatures[fi];
+                var data = [];
+                for (var bi = 0; bi < buckets.length; bi++) {
+                    data.push((lookup[buckets[bi]] && lookup[buckets[bi]][feature]) || 0);
+                }
+                datasets.push({
+                    label: feature,
+                    data: data,
+                    borderColor: colors[fi % colors.length],
+                    backgroundColor: colors[fi % colors.length] + '20',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 2
+                });
+            }
+
+            // "Other" aggregate line
+            if (otherFeatures.length > 0) {
+                var otherData = [];
+                for (var bi = 0; bi < buckets.length; bi++) {
+                    var sum = 0;
+                    for (var oi = 0; oi < otherFeatures.length; oi++) {
+                        sum += (lookup[buckets[bi]] && lookup[buckets[bi]][otherFeatures[oi]]) || 0;
+                    }
+                    otherData.push(sum);
+                }
+                datasets.push({
+                    label: 'Other (' + otherFeatures.length + ')',
+                    data: otherData,
+                    borderColor: '#bdc3c7',
+                    backgroundColor: '#bdc3c720',
+                    borderWidth: 2,
+                    borderDash: [5, 5],
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 1
+                });
+            }
+
+            // Format bucket labels
+            var labels = buckets.map(function(b) {
+                if (b.length === 7) return b; // YYYY-MM
+                if (b.length === 10) return b.substring(5); // MM-DD
+                if (b.length === 16) return b.substring(11); // HH:MM
+                return b.substring(5);
+            });
+
+            new Chart(document.getElementById('usageChart'), {
+                type: 'line',
+                data: { labels: labels, datasets: datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: { boxWidth: 12, padding: 15 }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { precision: 0 }
+                        }
+                    }
+                }
+            });
+        })();
+    </script>
+    {{end}}
+</body>
+</html>
