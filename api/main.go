@@ -1326,8 +1326,6 @@ func main() {
 		defer rows.Close()
 
 		var stats []PlatformStats
-		var totalClients int64
-		var totalChecks int64
 
 		for rows.Next() {
 			var stat PlatformStats
@@ -1343,8 +1341,20 @@ func main() {
 				continue
 			}
 			stats = append(stats, stat)
-			totalClients += stat.UniqueClients
-			totalChecks += stat.TotalChecks
+		}
+
+		// Query global totals with proper deduplication
+		var totalClients int64
+		var totalChecks int64
+		totalsQuery := fmt.Sprintf(`
+			SELECT COUNT(DISTINCT client_id), COUNT(*)
+			FROM version_checks
+			WHERE timestamp >= %s
+				AND client_id IS NOT NULL
+				AND client_id != ''
+		`, timeFilter)
+		if err := db.QueryRow(totalsQuery).Scan(&totalClients, &totalChecks); err != nil {
+			log.Printf("Error querying totals: %v", err)
 		}
 
 		// Query version stats
