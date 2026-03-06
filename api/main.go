@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -14,7 +15,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -170,6 +174,299 @@ type FeatureAnalytics struct {
 
 //go:embed templates/*.html
 var templateFS embed.FS
+
+// Release notes types and parser
+
+type ReleaseItem struct {
+	Text string
+}
+
+type ReleaseSection struct {
+	Category string
+	Items    []ReleaseItem
+}
+
+type ReleaseVersion struct {
+	Version  string
+	Subtitle string
+	Sections []ReleaseSection
+}
+
+type ReleaseNotes struct {
+	mu        sync.RWMutex
+	versions  map[string][]ReleaseVersion // lang -> versions
+	langFiles map[string]time.Time        // lang -> last mod time
+	dir       string
+}
+
+type ReleasesPageData struct {
+	Versions        []ReleaseVersion
+	AllVersions     []string
+	SelectedVersion string
+	SelectedLang    string
+	AvailableLangs  []string
+	LangLabels      map[string]string
+	Current         *ReleaseVersion
+	GeneratedAt     string
+}
+
+var versionHeaderRe = regexp.MustCompile(`^\s*v(\d+\.\d+(?:\.\d+)?)\s*(.*)$`)
+var numberedItemRe = regexp.MustCompile(`^\s*(\d+)\.\s+(.*)$`)
+
+var langLabels = map[string]string{
+	"en": "English",
+	"fr": "Français",
+	"de": "Deutsch",
+}
+
+func parseReleaseFile(data []byte) []ReleaseVersion {
+	var versions []ReleaseVersion
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+
+	var currentVersion *ReleaseVersion
+	var currentSection *ReleaseSection
+	var currentItem *ReleaseItem
+	pastHeader := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		// Skip empty lines
+		if trimmed == "" {
+			continue
+		}
+
+		// Skip title/separator at top of file
+		if !pastHeader {
+			if strings.HasPrefix(trimmed, "===") {
+				pastHeader = true
+				continue
+			}
+			if currentVersion == nil && !versionHeaderRe.MatchString(trimmed) {
+				continue
+			}
+			pastHeader = true
+		}
+
+		// Check for version header
+		if m := versionHeaderRe.FindStringSubmatch(trimmed); m != nil {
+			// Save previous item
+			if currentItem != nil && currentSection != nil {
+				currentSection.Items = append(currentSection.Items, *currentItem)
+				currentItem = nil
+			}
+			// Save previous section
+			if currentSection != nil && currentVersion != nil {
+				currentVersion.Sections = append(currentVersion.Sections, *currentSection)
+				currentSection = nil
+			}
+			// Save previous version
+			if currentVersion != nil {
+				versions = append(versions, *currentVersion)
+			}
+			currentVersion = &ReleaseVersion{
+				Version:  m[1],
+				Subtitle: strings.TrimSpace(m[2]),
+			}
+			continue
+		}
+
+		// Check for category header
+		if trimmed == "FEATURES" || trimmed == "BUGS" {
+			// Save previous item
+			if currentItem != nil && currentSection != nil {
+				currentSection.Items = append(currentSection.Items, *currentItem)
+				currentItem = nil
+			}
+			// Save previous section
+			if currentSection != nil && currentVersion != nil {
+				currentVersion.Sections = append(currentVersion.Sections, *currentSection)
+			}
+			currentSection = &ReleaseSection{Category: trimmed}
+			continue
+		}
+
+		// Check for numbered item
+		if m := numberedItemRe.FindStringSubmatch(trimmed); m != nil {
+			// Save previous item
+			if currentItem != nil && currentSection != nil {
+				currentSection.Items = append(currentSection.Items, *currentItem)
+			}
+			currentItem = &ReleaseItem{Text: m[2]}
+			continue
+		}
+
+		// Continuation line — append to current item
+		if currentItem != nil {
+			currentItem.Text += " " + trimmed
+		}
+	}
+
+	// Flush remaining
+	if currentItem != nil && currentSection != nil {
+		currentSection.Items = append(currentSection.Items, *currentItem)
+	}
+	if currentSection != nil && currentVersion != nil {
+		currentVersion.Sections = append(currentVersion.Sections, *currentSection)
+	}
+	if currentVersion != nil {
+		versions = append(versions, *currentVersion)
+	}
+
+	return versions
+}
+
+func loadReleaseNotes(dir string) *ReleaseNotes {
+	rn := &ReleaseNotes{
+		versions:  make(map[string][]ReleaseVersion),
+		langFiles: make(map[string]time.Time),
+		dir:       dir,
+	}
+	rn.reload()
+	return rn
+}
+
+func (rn *ReleaseNotes) reload() {
+	files, err := filepath.Glob(filepath.Join(rn.dir, "*.txt"))
+	if err != nil {
+		log.Printf("Error scanning release notes dir: %v", err)
+		return
+	}
+
+	for _, f := range files {
+		lang := strings.TrimSuffix(filepath.Base(f), ".txt")
+		info, err := os.Stat(f)
+		if err != nil {
+			log.Printf("Error stat release notes file %s: %v", f, err)
+			continue
+		}
+
+		data, err := os.ReadFile(f)
+		if err != nil {
+			log.Printf("Error reading release notes file %s: %v", f, err)
+			continue
+		}
+
+		rn.mu.Lock()
+		rn.versions[lang] = parseReleaseFile(data)
+		rn.langFiles[lang] = info.ModTime()
+		rn.mu.Unlock()
+
+		log.Printf("Loaded release notes: %s (%d versions)", lang, len(rn.versions[lang]))
+	}
+}
+
+func (rn *ReleaseNotes) CheckAndReload() {
+	files, err := filepath.Glob(filepath.Join(rn.dir, "*.txt"))
+	if err != nil {
+		return
+	}
+
+	for _, f := range files {
+		lang := strings.TrimSuffix(filepath.Base(f), ".txt")
+		info, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+
+		rn.mu.RLock()
+		lastMod, exists := rn.langFiles[lang]
+		rn.mu.RUnlock()
+
+		if !exists || info.ModTime().After(lastMod) {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			rn.mu.Lock()
+			rn.versions[lang] = parseReleaseFile(data)
+			rn.langFiles[lang] = info.ModTime()
+			rn.mu.Unlock()
+			log.Printf("Reloaded release notes: %s", lang)
+		}
+	}
+}
+
+func (rn *ReleaseNotes) GetVersions(lang string) []ReleaseVersion {
+	rn.mu.RLock()
+	defer rn.mu.RUnlock()
+	if v, ok := rn.versions[lang]; ok {
+		return v
+	}
+	return nil
+}
+
+func (rn *ReleaseNotes) AvailableLangs() []string {
+	rn.mu.RLock()
+	defer rn.mu.RUnlock()
+	langs := make([]string, 0, len(rn.versions))
+	for lang := range rn.versions {
+		langs = append(langs, lang)
+	}
+	sort.Strings(langs)
+	return langs
+}
+
+func detectLanguage(r *http.Request, available []string) string {
+	// Query param override
+	if lang := r.URL.Query().Get("lang"); lang != "" {
+		for _, a := range available {
+			if a == lang {
+				return lang
+			}
+		}
+	}
+
+	// Parse Accept-Language header
+	accept := r.Header.Get("Accept-Language")
+	if accept == "" {
+		return "en"
+	}
+
+	type langPref struct {
+		lang string
+		q    float64
+	}
+
+	var prefs []langPref
+	for _, part := range strings.Split(accept, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		tag := part
+		q := 1.0
+		if idx := strings.Index(part, ";q="); idx != -1 {
+			tag = part[:idx]
+			if v, err := strconv.ParseFloat(part[idx+3:], 64); err == nil {
+				q = v
+			}
+		}
+		tag = strings.TrimSpace(tag)
+		// Extract primary language tag (e.g. "fr-FR" -> "fr")
+		if idx := strings.IndexByte(tag, '-'); idx != -1 {
+			tag = tag[:idx]
+		}
+		prefs = append(prefs, langPref{lang: strings.ToLower(tag), q: q})
+	}
+
+	// Sort by quality descending
+	sort.Slice(prefs, func(i, j int) bool {
+		return prefs[i].q > prefs[j].q
+	})
+
+	// Match against available
+	for _, p := range prefs {
+		for _, a := range available {
+			if a == p.lang {
+				return a
+			}
+		}
+	}
+
+	return "en"
+}
 
 // Known valid features - whitelist
 var knownFeatures = map[string]bool{
@@ -1016,6 +1313,13 @@ func main() {
 	}
 	defer db.Close()
 
+	// Load release notes
+	releaseNotesPath := os.Getenv("RELEASE_NOTES_PATH")
+	if releaseNotesPath == "" {
+		releaseNotesPath = "/app/release-notes"
+	}
+	releaseNotes := loadReleaseNotes(releaseNotesPath)
+
 	// Start background config reloader
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -1025,6 +1329,7 @@ func main() {
 			if err := config.CheckAndReload(); err != nil {
 				log.Printf("Error reloading config: %v", err)
 			}
+			releaseNotes.CheckAndReload()
 		}
 	}()
 
@@ -1838,6 +2143,86 @@ func main() {
 
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("Error executing analytics template: %v", err)
+		}
+	})
+
+	// Release notes page
+	http.HandleFunc("/releases", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		releaseNotes.CheckAndReload()
+
+		availableLangs := releaseNotes.AvailableLangs()
+		if len(availableLangs) == 0 {
+			http.Error(w, "No release notes available", http.StatusNotFound)
+			return
+		}
+
+		lang := detectLanguage(r, availableLangs)
+		versions := releaseNotes.GetVersions(lang)
+		if versions == nil {
+			// Fall back to English
+			lang = "en"
+			versions = releaseNotes.GetVersions(lang)
+		}
+		if versions == nil {
+			http.Error(w, "No release notes available", http.StatusNotFound)
+			return
+		}
+
+		// Build version list
+		allVersions := make([]string, len(versions))
+		for i, v := range versions {
+			allVersions[i] = v.Version
+		}
+
+		// Select version
+		selectedVersion := r.URL.Query().Get("version")
+		var current *ReleaseVersion
+		if selectedVersion != "" {
+			for i := range versions {
+				if versions[i].Version == selectedVersion {
+					current = &versions[i]
+					break
+				}
+			}
+		}
+		if current == nil && len(versions) > 0 {
+			current = &versions[0]
+			selectedVersion = current.Version
+		}
+
+		data := ReleasesPageData{
+			Versions:        versions,
+			AllVersions:     allVersions,
+			SelectedVersion: selectedVersion,
+			SelectedLang:    lang,
+			AvailableLangs:  availableLangs,
+			LangLabels:      langLabels,
+			Current:         current,
+			GeneratedAt:     time.Now().UTC().Format("2006-01-02 15:04:05"),
+		}
+
+		funcMap := template.FuncMap{
+			"lower": strings.ToLower,
+		}
+		tmpl, err := template.New("releases.html").Funcs(funcMap).ParseFS(templateFS, "templates/releases.html")
+		if err != nil {
+			log.Printf("Error parsing releases template: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+
+		if err := tmpl.Execute(w, data); err != nil {
+			log.Printf("Error executing releases template: %v", err)
 		}
 	})
 

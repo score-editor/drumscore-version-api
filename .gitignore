@@ -7,6 +7,9 @@ volumes/
 # Analytics database
 data/
 
+# Release notes (runtime data)
+release-notes/
+
 # Environment files and secrets
 .env
 .env.local

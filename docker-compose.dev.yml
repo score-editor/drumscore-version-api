@@ -9,6 +9,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
+      - ./release-notes:/app/release-notes:ro
     environment:
       - CONFIG_PATH=/app/config/version-multiplatform.json
       - DB_PATH=/app/data/analytics.db
