@@ -1333,6 +1333,15 @@ func main() {
 		}
 	}()
 
+	// Redirect root to main website
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, "https://drumscore.scot", http.StatusFound)
+	})
+
 	// Version check endpoint
 	http.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
