@@ -272,8 +272,17 @@ func parseReleaseFile(data []byte) []ReleaseVersion {
 			continue
 		}
 
-		// Check for category header
-		if trimmed == "FEATURES" || trimmed == "BUGS" {
+		// Check for category header (supports English, French, and German)
+		categoryMap := map[string]string{
+			"FEATURES":          "FEATURES",
+			"FONCTIONNALITÉS":   "FEATURES",
+			"FONCTIONNALITES":   "FEATURES",
+			"FUNKTIONEN":        "FEATURES",
+			"BUGS":              "BUGS",
+			"CORRECTIONS":       "BUGS",
+			"FEHLER":            "BUGS",
+		}
+		if cat, ok := categoryMap[trimmed]; ok {
 			// Save previous item
 			if currentItem != nil && currentSection != nil {
 				currentSection.Items = append(currentSection.Items, *currentItem)
@@ -283,7 +292,7 @@ func parseReleaseFile(data []byte) []ReleaseVersion {
 			if currentSection != nil && currentVersion != nil {
 				currentVersion.Sections = append(currentVersion.Sections, *currentSection)
 			}
-			currentSection = &ReleaseSection{Category: trimmed}
+			currentSection = &ReleaseSection{Category: cat}
 			continue
 		}
 
