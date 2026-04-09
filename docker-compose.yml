@@ -43,6 +43,7 @@ services:
       - DB_PATH=/app/data/analytics.db
       - ANALYTICS_SECRET=${ANALYTICS_SECRET:-}
       - ADMIN_SECRET=${ADMIN_SECRET:-}
+      - PUBLIC_HOST=${PUBLIC_HOST:-https://support.drumscore.scot}
     networks:
       - version-api-network
     expose:

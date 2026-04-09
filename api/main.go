@@ -2628,12 +2628,11 @@ func main() {
 			}
 
 			// Build the download URL using the request host
-			scheme := "https"
-			host := r.Host
-			if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
-				scheme = fwdProto
+			publicHost := os.Getenv("PUBLIC_HOST")
+			if publicHost == "" {
+				publicHost = "https://" + r.Host
 			}
-			downloadLink := fmt.Sprintf("%s://%s/api/uat/download/%s", scheme, host, token)
+			downloadLink := fmt.Sprintf("%s/api/uat/download/%s", publicHost, token)
 
 			log.Printf("UAT link created for %s: %s/%s/%s (expires %s)", req.IssuedTo, req.Version, req.Platform, req.Arch, expiresAt.Format(time.RFC3339))
 
