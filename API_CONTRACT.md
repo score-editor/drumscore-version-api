@@ -584,6 +584,137 @@ curl -X POST \
 
 ---
 
+## UAT Build & Download Link Management
+
+### Authentication
+All admin endpoints require: `Authorization: Bearer <ADMIN_SECRET>`
+Admin endpoints are restricted to local network access only via nginx.
+
+### Endpoint 4: Upload UAT Build
+
+```http
+POST /api/admin/uat-builds
+Authorization: Bearer <ADMIN_SECRET>
+Content-Type: multipart/form-data
+
+Form fields:
+  file: binary (required) - the build file to upload
+  version: string (required) - e.g. "3.5.0-beta1"
+  platform: string (required) - "windows", "macos", or "linux"
+  arch: string (required) - "x86_64" or "aarch64"
+```
+
+#### Response
+```json
+201 Created
+{
+  "id": 1,
+  "version": "3.5.0-beta1",
+  "platform": "macos",
+  "arch": "aarch64",
+  "filename": "3.5.0-beta1-macos-aarch64-DSE.dmg",
+  "fileSize": 52428800
+}
+```
+
+### Endpoint 5: List UAT Builds
+
+```http
+GET /api/admin/uat-builds
+Authorization: Bearer <ADMIN_SECRET>
+```
+
+#### Response
+```json
+200 OK
+{
+  "builds": [...],
+  "total": 2
+}
+```
+
+### Endpoint 6: Delete UAT Build
+
+```http
+DELETE /api/admin/uat-builds/{id}
+Authorization: Bearer <ADMIN_SECRET>
+```
+
+Returns 409 Conflict if active links reference the build.
+
+### Endpoint 7: Create UAT Download Link
+
+```http
+POST /api/admin/uat-links
+Authorization: Bearer <ADMIN_SECRET>
+Content-Type: application/json
+
+{
+  "issuedTo": "john@example.com",
+  "version": "3.5.0-beta1",
+  "platform": "macos",
+  "arch": "aarch64",
+  "maxUses": 3,
+  "expiresInHours": 168
+}
+```
+
+Defaults: `maxUses` = 3, `expiresInHours` = 168 (7 days).
+
+#### Response
+```json
+201 Created
+{
+  "token": "a3f5b8c2...",
+  "downloadLink": "https://support.drumscore.scot/api/uat/download/a3f5b8c2...",
+  "issuedTo": "john@example.com",
+  "version": "3.5.0-beta1",
+  "platform": "macos",
+  "arch": "aarch64",
+  "maxUses": 3,
+  "expiresAt": "2026-04-16T12:00:00Z"
+}
+```
+
+### Endpoint 8: List UAT Links
+
+```http
+GET /api/admin/uat-links?status=active
+Authorization: Bearer <ADMIN_SECRET>
+```
+
+Query: `?status=active` (default), `expired`, or `all`.
+
+### Endpoint 9: Revoke UAT Link
+
+```http
+DELETE /api/admin/uat-links/{token}
+Authorization: Bearer <ADMIN_SECRET>
+```
+
+Soft-revoke (sets revoked flag, keeps audit trail).
+
+### Endpoint 10: UAT Download (Tester-Facing)
+
+```http
+GET /api/uat/download/{token}
+```
+
+No authentication required — the token IS the authentication.
+- Valid token: serves the file as a download
+- Invalid/expired/revoked/exhausted: returns an HTML error page
+
+### Endpoint 11: UAT Admin Help
+
+```http
+GET /api/admin/uat-help
+Authorization: Bearer <ADMIN_SECRET>
+```
+
+Returns ready-to-use curl commands for all UAT operations.
+
+---
+
 ## Validation Rules
 
 The server performs these validations:

@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,6 +172,53 @@ type FeatureAnalytics struct {
 	GeneratedAt        string
 	TotalUses          int64
 	TotalUniqueClients int64
+}
+
+// UAT build and link types
+type UATBuild struct {
+	ID        int64  `json:"id"`
+	Version   string `json:"version"`
+	Platform  string `json:"platform"`
+	Arch      string `json:"arch"`
+	Filename  string `json:"filename"`
+	FileSize  int64  `json:"fileSize"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type UATLink struct {
+	ID         int64  `json:"id"`
+	Token      string `json:"token"`
+	IssuedTo   string `json:"issuedTo"`
+	BuildID    int64  `json:"buildId"`
+	Version    string `json:"version,omitempty"`
+	Platform   string `json:"platform,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	MaxUses    int    `json:"maxUses"`
+	UseCount   int    `json:"useCount"`
+	ExpiresAt  string `json:"expiresAt"`
+	Revoked    bool   `json:"revoked"`
+	CreatedAt  string `json:"createdAt"`
+	LastUsedAt string `json:"lastUsedAt,omitempty"`
+}
+
+type CreateUATLinkRequest struct {
+	IssuedTo       string `json:"issuedTo"`
+	Version        string `json:"version"`
+	Platform       string `json:"platform"`
+	Arch           string `json:"arch"`
+	MaxUses        int    `json:"maxUses"`
+	ExpiresInHours int    `json:"expiresInHours"`
+}
+
+type CreateUATLinkResponse struct {
+	Token        string `json:"token"`
+	DownloadLink string `json:"downloadLink"`
+	IssuedTo     string `json:"issuedTo"`
+	Version      string `json:"version"`
+	Platform     string `json:"platform"`
+	Arch         string `json:"arch"`
+	MaxUses      int    `json:"maxUses"`
+	ExpiresAt    string `json:"expiresAt"`
 }
 
 //go:embed templates/*.html
@@ -825,6 +874,36 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 
 	CREATE INDEX IF NOT EXISTS idx_feature_monthly_ym ON feature_monthly_aggregates(year_month);
 	CREATE INDEX IF NOT EXISTS idx_feature_monthly_feature ON feature_monthly_aggregates(feature_name);
+
+	CREATE TABLE IF NOT EXISTS uat_builds (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		version TEXT NOT NULL,
+		platform TEXT NOT NULL,
+		arch TEXT NOT NULL,
+		filename TEXT NOT NULL,
+		file_size INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		CHECK(platform IN ('windows', 'macos', 'linux')),
+		CHECK(arch IN ('x86_64', 'aarch64'))
+	);
+
+	CREATE TABLE IF NOT EXISTS uat_links (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		token TEXT NOT NULL UNIQUE,
+		issued_to TEXT NOT NULL,
+		build_id INTEGER NOT NULL,
+		max_uses INTEGER NOT NULL DEFAULT 3,
+		use_count INTEGER NOT NULL DEFAULT 0,
+		expires_at DATETIME NOT NULL,
+		revoked INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		last_used_at DATETIME,
+		FOREIGN KEY (build_id) REFERENCES uat_builds(id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_uat_links_token ON uat_links(token);
+	CREATE INDEX IF NOT EXISTS idx_uat_links_expires ON uat_links(expires_at);
+	CREATE INDEX IF NOT EXISTS idx_uat_builds_version ON uat_builds(version);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -909,9 +988,10 @@ func validateBatch(batch AnalyticsBatch) error {
 		return errors.New("invalid OS architecture")
 	}
 
-	// Session start timestamp
+	// Session start timestamp (allow 5 minutes of clock skew for clients ahead of server)
 	now := time.Now().Unix() * 1000
-	if batch.SessionStart > now || batch.SessionStart < (now-7*24*60*60*1000) {
+	clockSkewTolerance := int64(5 * 60 * 1000)
+	if batch.SessionStart > now+clockSkewTolerance || batch.SessionStart < (now-7*24*60*60*1000) {
 		return fmt.Errorf("invalid session start timestamp: got %d, server now %d, diff %dms", batch.SessionStart, now, batch.SessionStart-now)
 	}
 
@@ -950,6 +1030,47 @@ func validateSignature(body []byte, signature, secret string) bool {
 	mac.Write(body)
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
+}
+
+// UAT helper functions
+
+func validateAdminAuth(r *http.Request, secret string) bool {
+	if secret == "" {
+		return false
+	}
+	auth := r.Header.Get("Authorization")
+	return auth == "Bearer "+secret
+}
+
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func uatErrorPage(title, message string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drum Score Editor - %s</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; color: #333; }
+.container { text-align: center; padding: 2rem; max-width: 500px; }
+h1 { color: #c0392b; font-size: 1.5rem; }
+p { font-size: 1.1rem; line-height: 1.6; color: #666; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>%s</h1>
+<p>%s</p>
+</div>
+</body>
+</html>`, title, title, message)
 }
 
 // Monthly aggregation functions
@@ -1306,6 +1427,19 @@ func main() {
 	analyticsSecret := os.Getenv("ANALYTICS_SECRET")
 	if analyticsSecret == "" {
 		log.Println("WARNING: ANALYTICS_SECRET not set, signature validation disabled")
+	}
+
+	adminSecret := os.Getenv("ADMIN_SECRET")
+	if adminSecret == "" {
+		log.Println("WARNING: ADMIN_SECRET not set, UAT admin endpoints disabled")
+	}
+
+	uatBuildsDir := os.Getenv("UAT_BUILDS_PATH")
+	if uatBuildsDir == "" {
+		uatBuildsDir = "/app/data/uat-builds"
+	}
+	if err := os.MkdirAll(uatBuildsDir, 0755); err != nil {
+		log.Fatalf("Failed to create UAT builds directory: %v", err)
 	}
 
 	config := NewConfig(configPath)
@@ -2242,6 +2376,502 @@ func main() {
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("Error executing releases template: %v", err)
 		}
+	})
+
+	// ========================================================================
+	// UAT Build & Link Management Endpoints
+	// ========================================================================
+
+	// Upload a UAT build
+	http.HandleFunc("/api/admin/uat-builds", func(w http.ResponseWriter, r *http.Request) {
+		if !validateAdminAuth(r, adminSecret) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPost:
+			// Parse multipart form (max 500MB)
+			if err := r.ParseMultipartForm(500 << 20); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to parse upload", Details: err.Error()})
+				return
+			}
+
+			version := r.FormValue("version")
+			platform := r.FormValue("platform")
+			arch := r.FormValue("arch")
+
+			if version == "" || platform == "" || arch == "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Missing required fields: version, platform, arch"})
+				return
+			}
+
+			if platform != "windows" && platform != "macos" && platform != "linux" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid platform", Details: "Must be: windows, macos, or linux"})
+				return
+			}
+			if arch != "x86_64" && arch != "aarch64" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid arch", Details: "Must be: x86_64 or aarch64"})
+				return
+			}
+
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Missing file"})
+				return
+			}
+			defer file.Close()
+
+			// Store file as version-platform-arch-originalname
+			safeFilename := fmt.Sprintf("%s-%s-%s-%s", version, platform, arch, filepath.Base(header.Filename))
+			destPath := filepath.Join(uatBuildsDir, safeFilename)
+
+			out, err := os.Create(destPath)
+			if err != nil {
+				log.Printf("Error creating UAT build file: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to store file"})
+				return
+			}
+			defer out.Close()
+
+			written, err := io.Copy(out, file)
+			if err != nil {
+				os.Remove(destPath)
+				log.Printf("Error writing UAT build file: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to write file"})
+				return
+			}
+
+			result, err := db.Exec(`INSERT INTO uat_builds (version, platform, arch, filename, file_size) VALUES (?, ?, ?, ?, ?)`,
+				version, platform, arch, safeFilename, written)
+			if err != nil {
+				os.Remove(destPath)
+				log.Printf("Error inserting UAT build: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to record build"})
+				return
+			}
+
+			buildID, _ := result.LastInsertId()
+			log.Printf("UAT build uploaded: %s (%s/%s) - %d bytes", version, platform, arch, written)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(UATBuild{
+				ID:       buildID,
+				Version:  version,
+				Platform: platform,
+				Arch:     arch,
+				Filename: safeFilename,
+				FileSize: written,
+			})
+
+		case http.MethodGet:
+			rows, err := db.Query(`SELECT id, version, platform, arch, filename, file_size, created_at FROM uat_builds ORDER BY created_at DESC`)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to query builds"})
+				return
+			}
+			defer rows.Close()
+
+			builds := []UATBuild{}
+			for rows.Next() {
+				var b UATBuild
+				if err := rows.Scan(&b.ID, &b.Version, &b.Platform, &b.Arch, &b.Filename, &b.FileSize, &b.CreatedAt); err != nil {
+					continue
+				}
+				builds = append(builds, b)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"builds": builds, "total": len(builds)})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// Delete a UAT build
+	http.HandleFunc("/api/admin/uat-builds/", func(w http.ResponseWriter, r *http.Request) {
+		if !validateAdminAuth(r, adminSecret) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
+			return
+		}
+
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		idStr := strings.TrimPrefix(r.URL.Path, "/api/admin/uat-builds/")
+		buildID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid build ID"})
+			return
+		}
+
+		var filename string
+		err = db.QueryRow(`SELECT filename FROM uat_builds WHERE id = ?`, buildID).Scan(&filename)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Build not found"})
+			return
+		}
+
+		// Check if any active links reference this build
+		var activeLinks int
+		db.QueryRow(`SELECT COUNT(*) FROM uat_links WHERE build_id = ? AND revoked = 0 AND expires_at > datetime('now') AND use_count < max_uses`, buildID).Scan(&activeLinks)
+		if activeLinks > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Build has active links", Details: fmt.Sprintf("%d active link(s) reference this build — revoke them first", activeLinks)})
+			return
+		}
+
+		os.Remove(filepath.Join(uatBuildsDir, filename))
+		db.Exec(`DELETE FROM uat_builds WHERE id = ?`, buildID)
+
+		log.Printf("UAT build deleted: ID %d (%s)", buildID, filename)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "deleted", "id": buildID})
+	})
+
+	// Create and list UAT links
+	http.HandleFunc("/api/admin/uat-links", func(w http.ResponseWriter, r *http.Request) {
+		if !validateAdminAuth(r, adminSecret) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPost:
+			var req CreateUATLinkRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid JSON", Details: err.Error()})
+				return
+			}
+
+			if req.IssuedTo == "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "issuedTo is required"})
+				return
+			}
+
+			// Find the build
+			var buildID int64
+			err := db.QueryRow(`SELECT id FROM uat_builds WHERE version = ? AND platform = ? AND arch = ? ORDER BY created_at DESC LIMIT 1`,
+				req.Version, req.Platform, req.Arch).Scan(&buildID)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "No build found", Details: fmt.Sprintf("No build for %s/%s/%s", req.Version, req.Platform, req.Arch)})
+				return
+			}
+
+			// Defaults
+			if req.MaxUses <= 0 {
+				req.MaxUses = 3
+			}
+			if req.ExpiresInHours <= 0 {
+				req.ExpiresInHours = 168 // 7 days
+			}
+
+			token, err := generateToken()
+			if err != nil {
+				log.Printf("Error generating token: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to generate token"})
+				return
+			}
+
+			expiresAt := time.Now().Add(time.Duration(req.ExpiresInHours) * time.Hour)
+
+			_, err = db.Exec(`INSERT INTO uat_links (token, issued_to, build_id, max_uses, expires_at) VALUES (?, ?, ?, ?, ?)`,
+				token, req.IssuedTo, buildID, req.MaxUses, expiresAt)
+			if err != nil {
+				log.Printf("Error creating UAT link: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to create link"})
+				return
+			}
+
+			// Build the download URL using the request host
+			scheme := "https"
+			host := r.Host
+			if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
+				scheme = fwdProto
+			}
+			downloadLink := fmt.Sprintf("%s://%s/api/uat/download/%s", scheme, host, token)
+
+			log.Printf("UAT link created for %s: %s/%s/%s (expires %s)", req.IssuedTo, req.Version, req.Platform, req.Arch, expiresAt.Format(time.RFC3339))
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(CreateUATLinkResponse{
+				Token:        token,
+				DownloadLink: downloadLink,
+				IssuedTo:     req.IssuedTo,
+				Version:      req.Version,
+				Platform:     req.Platform,
+				Arch:         req.Arch,
+				MaxUses:      req.MaxUses,
+				ExpiresAt:    expiresAt.Format(time.RFC3339),
+			})
+
+		case http.MethodGet:
+			status := r.URL.Query().Get("status")
+			if status == "" {
+				status = "active"
+			}
+
+			var query string
+			switch status {
+			case "active":
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, b.version, b.platform, b.arch, l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+					FROM uat_links l JOIN uat_builds b ON l.build_id = b.id
+					WHERE l.revoked = 0 AND l.expires_at > datetime('now') AND l.use_count < l.max_uses
+					ORDER BY l.created_at DESC`
+			case "expired":
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, b.version, b.platform, b.arch, l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+					FROM uat_links l JOIN uat_builds b ON l.build_id = b.id
+					WHERE l.revoked = 1 OR l.expires_at <= datetime('now') OR l.use_count >= l.max_uses
+					ORDER BY l.created_at DESC`
+			case "all":
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, b.version, b.platform, b.arch, l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+					FROM uat_links l JOIN uat_builds b ON l.build_id = b.id
+					ORDER BY l.created_at DESC`
+			default:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid status filter", Details: "Use: active, expired, or all"})
+				return
+			}
+
+			rows, err := db.Query(query)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to query links"})
+				return
+			}
+			defer rows.Close()
+
+			links := []UATLink{}
+			for rows.Next() {
+				var l UATLink
+				var revokedInt int
+				if err := rows.Scan(&l.ID, &l.Token, &l.IssuedTo, &l.BuildID, &l.Version, &l.Platform, &l.Arch, &l.MaxUses, &l.UseCount, &l.ExpiresAt, &revokedInt, &l.CreatedAt, &l.LastUsedAt); err != nil {
+					continue
+				}
+				l.Revoked = revokedInt != 0
+				links = append(links, l)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"links": links, "total": len(links)})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// Revoke a UAT link
+	http.HandleFunc("/api/admin/uat-links/", func(w http.ResponseWriter, r *http.Request) {
+		if !validateAdminAuth(r, adminSecret) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
+			return
+		}
+
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		token := strings.TrimPrefix(r.URL.Path, "/api/admin/uat-links/")
+		if token == "" || len(token) != 64 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid token"})
+			return
+		}
+
+		result, err := db.Exec(`UPDATE uat_links SET revoked = 1 WHERE token = ?`, token)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to revoke link"})
+			return
+		}
+
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Link not found"})
+			return
+		}
+
+		log.Printf("UAT link revoked: %s", token)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "revoked", "token": token})
+	})
+
+	// UAT download - tester-facing endpoint
+	http.HandleFunc("/api/uat/download/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		token := strings.TrimPrefix(r.URL.Path, "/api/uat/download/")
+		if token == "" || len(token) != 64 {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, uatErrorPage("Invalid Link", "This download link is not valid."))
+			return
+		}
+
+		var linkID int64
+		var filename string
+		var maxUses, useCount int
+		var expiresAt string
+		var revoked int
+
+		err := db.QueryRow(`SELECT l.id, b.filename, l.max_uses, l.use_count, l.expires_at, l.revoked
+			FROM uat_links l JOIN uat_builds b ON l.build_id = b.id
+			WHERE l.token = ?`, token).Scan(&linkID, &filename, &maxUses, &useCount, &expiresAt, &revoked)
+		if err != nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, uatErrorPage("Link Not Found", "This download link does not exist."))
+			return
+		}
+
+		if revoked != 0 {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, uatErrorPage("Link Revoked", "This download link has been revoked. Please contact the person who sent you this link."))
+			return
+		}
+
+		expires, _ := time.Parse("2006-01-02T15:04:05Z07:00", expiresAt)
+		if expires.IsZero() {
+			expires, _ = time.Parse("2006-01-02 15:04:05-07:00", expiresAt)
+		}
+		if expires.IsZero() {
+			expires, _ = time.Parse("2006-01-02 15:04:05", expiresAt)
+		}
+		if !expires.IsZero() && time.Now().After(expires) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, uatErrorPage("Link Expired", "This download link has expired. Please contact the person who sent you this link for a new one."))
+			return
+		}
+
+		if useCount >= maxUses {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, uatErrorPage("Download Limit Reached", "This download link has been used the maximum number of times. Please contact the person who sent you this link for a new one."))
+			return
+		}
+
+		// Check file exists
+		filePath := filepath.Join(uatBuildsDir, filename)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			log.Printf("UAT build file missing: %s", filePath)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, uatErrorPage("File Not Available", "The build file is no longer available. Please contact the person who sent you this link."))
+			return
+		}
+
+		// Update usage
+		db.Exec(`UPDATE uat_links SET use_count = use_count + 1, last_used_at = datetime('now') WHERE id = ?`, linkID)
+
+		log.Printf("UAT download: token=%s file=%s (use %d/%d)", token[:12]+"...", filename, useCount+1, maxUses)
+
+		// Serve the file
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		http.ServeFile(w, r, filePath)
+	})
+
+	// UAT admin help - cheat sheet
+	http.HandleFunc("/api/admin/uat-help", func(w http.ResponseWriter, r *http.Request) {
+		if !validateAdminAuth(r, adminSecret) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
+			return
+		}
+
+		scheme := "https"
+		host := r.Host
+		if fwdProto := r.Header.Get("X-Forwarded-Proto"); fwdProto != "" {
+			scheme = fwdProto
+		}
+		base := fmt.Sprintf("%s://%s", scheme, host)
+
+		help := map[string]interface{}{
+			"info": "UAT Download Link Management — your admin secret is stored in .env on droid1",
+			"commands": map[string]string{
+				"1_upload_build": fmt.Sprintf(`curl -X POST %s/api/admin/uat-builds -H "Authorization: Bearer $ADMIN_SECRET" -F "file=@<path-to-file>" -F "version=<version>" -F "platform=<macos|windows|linux>" -F "arch=<x86_64|aarch64>"`, base),
+				"2_create_link":  fmt.Sprintf(`curl -X POST %s/api/admin/uat-links -H "Authorization: Bearer $ADMIN_SECRET" -H "Content-Type: application/json" -d '{"issuedTo":"<name-or-email>","version":"<version>","platform":"<platform>","arch":"<arch>"}'`, base),
+				"3_list_builds":  fmt.Sprintf(`curl %s/api/admin/uat-builds -H "Authorization: Bearer $ADMIN_SECRET"`, base),
+				"4_list_links":   fmt.Sprintf(`curl "%s/api/admin/uat-links?status=active" -H "Authorization: Bearer $ADMIN_SECRET"`, base),
+				"5_revoke_link":  fmt.Sprintf(`curl -X DELETE %s/api/admin/uat-links/<token> -H "Authorization: Bearer $ADMIN_SECRET"`, base),
+				"6_delete_build": fmt.Sprintf(`curl -X DELETE %s/api/admin/uat-builds/<id> -H "Authorization: Bearer $ADMIN_SECRET"`, base),
+			},
+			"defaults": map[string]interface{}{
+				"max_uses":         3,
+				"expires_in_hours": 168,
+			},
+			"notes": []string{
+				"Admin secret is in .env on droid1 — SSH in and 'cat .env' if you forget it",
+				"Upload the build first, then create links against it",
+				"Links default to 3 uses and 7 days expiry",
+				"Testers just click the download_link — no auth needed for them",
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.Encode(help)
 	})
 
 	// Start aggregation job

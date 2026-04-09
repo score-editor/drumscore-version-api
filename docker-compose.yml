@@ -42,6 +42,7 @@ services:
       - CONFIG_PATH=/app/config/version-multiplatform.json
       - DB_PATH=/app/data/analytics.db
       - ANALYTICS_SECRET=${ANALYTICS_SECRET:-}
+      - ADMIN_SECRET=${ADMIN_SECRET:-}
     networks:
       - version-api-network
     expose:
