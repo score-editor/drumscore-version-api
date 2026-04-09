@@ -2846,32 +2846,58 @@ func main() {
 		}
 		base := fmt.Sprintf("%s://%s", scheme, host)
 
-		help := map[string]interface{}{
-			"info": "UAT Download Link Management — your admin secret is stored in .env on droid1",
-			"commands": map[string]string{
-				"1_upload_build": fmt.Sprintf(`curl -X POST %s/api/admin/uat-builds -H "Authorization: Bearer $ADMIN_SECRET" -F "file=@<path-to-file>" -F "version=<version>" -F "platform=<macos|windows|linux>" -F "arch=<x86_64|aarch64>"`, base),
-				"2_create_link":  fmt.Sprintf(`curl -X POST %s/api/admin/uat-links -H "Authorization: Bearer $ADMIN_SECRET" -H "Content-Type: application/json" -d '{"issuedTo":"<name-or-email>","version":"<version>","platform":"<platform>","arch":"<arch>"}'`, base),
-				"3_list_builds":  fmt.Sprintf(`curl %s/api/admin/uat-builds -H "Authorization: Bearer $ADMIN_SECRET"`, base),
-				"4_list_links":   fmt.Sprintf(`curl "%s/api/admin/uat-links?status=active" -H "Authorization: Bearer $ADMIN_SECRET"`, base),
-				"5_revoke_link":  fmt.Sprintf(`curl -X DELETE %s/api/admin/uat-links/<token> -H "Authorization: Bearer $ADMIN_SECRET"`, base),
-				"6_delete_build": fmt.Sprintf(`curl -X DELETE %s/api/admin/uat-builds/<id> -H "Authorization: Bearer $ADMIN_SECRET"`, base),
-			},
-			"defaults": map[string]interface{}{
-				"max_uses":         3,
-				"expires_in_hours": 168,
-			},
-			"notes": []string{
-				"Admin secret is in .env on droid1 — SSH in and 'cat .env' if you forget it",
-				"Upload the build first, then create links against it",
-				"Links default to 3 uses and 7 days expiry",
-				"Testers just click the download_link — no auth needed for them",
-			},
-		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintf(w, `UAT Download Link Management
+=============================
+Admin secret is in .env on droid1 — SSH in and 'cat .env' if you forget it
 
-		w.Header().Set("Content-Type", "application/json")
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		enc.Encode(help)
+STEP 1: Upload a build
+-----------------------
+curl -sk -X POST %s/api/admin/uat-builds \
+  -H "Authorization: Bearer $ADMIN_SECRET" \
+  -F "file=@<path-to-file>" \
+  -F "version=<version>" \
+  -F "platform=<macos|windows|linux>" \
+  -F "arch=<x86_64|aarch64>"
+
+STEP 2: Create a link for a tester
+-----------------------------------
+curl -sk -X POST %s/api/admin/uat-links \
+  -H "Authorization: Bearer $ADMIN_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"issuedTo":"<name-or-email>","version":"<version>","platform":"<platform>","arch":"<arch>"}'
+
+LIST BUILDS
+-----------
+curl -sk %s/api/admin/uat-builds \
+  -H "Authorization: Bearer $ADMIN_SECRET"
+
+LIST LINKS (active|expired|all)
+-------------------------------
+curl -sk "%s/api/admin/uat-links?status=active" \
+  -H "Authorization: Bearer $ADMIN_SECRET"
+
+REVOKE A LINK
+-------------
+curl -sk -X DELETE %s/api/admin/uat-links/<token> \
+  -H "Authorization: Bearer $ADMIN_SECRET"
+
+DELETE A BUILD
+--------------
+curl -sk -X DELETE %s/api/admin/uat-builds/<id> \
+  -H "Authorization: Bearer $ADMIN_SECRET"
+
+DEFAULTS
+--------
+- max_uses: 3 (override with "maxUses" in create link JSON)
+- expiry: 7 days (override with "expiresInHours" in create link JSON)
+
+NOTES
+-----
+- Upload the build first, then create links against it
+- Testers just click the download link — no auth needed for them
+- Set ADMIN_SECRET in your shell: export ADMIN_SECRET=<your-secret>
+`, base, base, base, base, base, base)
 	})
 
 	// Start aggregation job
