@@ -14,3 +14,5 @@ services:
       - CONFIG_PATH=/app/config/version-multiplatform.json
       - DB_PATH=/app/data/analytics.db
       - ANALYTICS_SECRET=dev-secret
+      - ADMIN_SECRET=${ADMIN_SECRET:-dev-secret}
+      - PUBLIC_HOST=http://localhost:8081

@@ -296,6 +296,25 @@ Share pre-release builds with UAT testers via unique, controlled download links.
 
 See [API_CONTRACT.md](API_CONTRACT.md) for full endpoint documentation.
 
+### Local Development
+
+Run the API locally using Docker for development and testing — no nginx, SSL, or Cloudflare required:
+
+```bash
+# Build and run
+docker compose -f docker-compose.dev.yml up --build
+
+# Test it
+curl http://localhost:8081/health
+
+# Use the admin script against local
+UAT_HOST=http://localhost:8081 ADMIN_SECRET=dev-secret ./uat-admin.sh status
+```
+
+The dev compose uses port 8081 and defaults `ADMIN_SECRET` to `dev-secret`. Download links are generated with `http://localhost:8081` as the host.
+
+To stop: `docker compose -f docker-compose.dev.yml down`
+
 ### Rate Limiting
 
 - **Normal rate**: 60 requests/minute per IP
