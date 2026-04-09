@@ -36,6 +36,7 @@ See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
 - ✅ Feature usage tracking
 - ✅ Comprehensive payload validation
 - ✅ Health check endpoint
+- ✅ UAT build hosting and controlled download links
 - ✅ Containerized for easy migration to AWS/cloud
 
 ## Prerequisites
@@ -103,14 +104,22 @@ See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
    echo "ANALYTICS_SECRET=$(cat .analytics_secret)" > .env
    ```
 
-   This secret is used for HMAC-SHA256 signature validation on the `/api/analytics/batch` endpoint. The analytics batch endpoint is currently not used by any clients.
+   This secret is used for HMAC-SHA256 signature validation on the `/api/analytics/batch` endpoint.
 
-6. **Start the services**
+6. **Configure Admin Secret** (for UAT link management)
+   ```bash
+   # Add to your .env file
+   echo "ADMIN_SECRET=your-admin-secret-here" >> .env
+   ```
+
+   This secret is used to authenticate admin API requests for managing UAT builds and download links.
+
+7. **Start the services**
    ```bash
    docker compose up -d
    ```
 
-7. **Verify it's working**
+8. **Verify it's working**
    ```bash
    # Check container status
    docker compose ps
@@ -128,6 +137,7 @@ See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
 version-api/
 ├── docker-compose.yml                    # Container orchestration
 ├── setup-letsencrypt.sh                  # Certificate setup script
+├── uat-admin.sh                          # UAT build & link admin tool
 ├── .env.example                          # Example environment variables
 ├── API_CONTRACT.md                       # API documentation for client developers
 ├── config/
@@ -140,7 +150,8 @@ version-api/
 │   ├── Dockerfile                        # Go API container build
 │   └── main.go                           # API server code
 ├── data/                                 # Created automatically
-│   └── analytics.db                      # SQLite database (created on first run)
+│   ├── analytics.db                      # SQLite database (created on first run)
+│   └── uat-builds/                       # Uploaded UAT build files
 └── letsencrypt/                          # Let's Encrypt certificates (created by setup)
 ```
 
@@ -237,6 +248,53 @@ GET https://support.drumscore.scot/health
 ```
 
 For complete API documentation and client implementation guide, see [API_CONTRACT.md](API_CONTRACT.md).
+
+### UAT Build & Download Link Management
+
+Share pre-release builds with UAT testers via unique, controlled download links. Builds are hosted on droid1 and links are single-use by default (configurable).
+
+**Quick start using the admin script:**
+
+```bash
+# See all commands
+./uat-admin.sh help
+
+# Upload a build
+./uat-admin.sh upload DrumScoreEditor_macOS_arm64_3.6.0.dmg 3.6.0 macos aarch64
+
+# Create a download link for a tester
+./uat-admin.sh link "John Smith" 3.6.0 macos aarch64
+# → Returns a link to send to the tester
+
+# View all builds and active links
+./uat-admin.sh status
+
+# List active/expired/all links
+./uat-admin.sh links
+./uat-admin.sh links expired
+
+# Revoke a link
+./uat-admin.sh revoke <token>
+
+# Delete a build (must revoke active links first)
+./uat-admin.sh delete-build <id>
+```
+
+**How it works:**
+
+1. Upload a build file to droid1 via the admin API
+2. Create a unique download link for each tester
+3. Send the link to the tester — they click it and the file downloads
+4. Links default to 3 uses and 7-day expiry
+5. Link preview bots (Facebook Messenger, Slack, WhatsApp, etc.) are detected and ignored so they don't consume uses
+
+**Admin API access:**
+- Admin endpoints are restricted to the local network only (via nginx)
+- Protected by a bearer token (`ADMIN_SECRET` in `.env` on droid1)
+- Access the API help cheat sheet: `./uat-admin.sh help`
+- Or via curl: `curl -sk https://droid1.local/api/admin/uat-help -H "Authorization: Bearer $ADMIN_SECRET"`
+
+See [API_CONTRACT.md](API_CONTRACT.md) for full endpoint documentation.
 
 ### Rate Limiting
 
