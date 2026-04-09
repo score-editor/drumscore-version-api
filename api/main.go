@@ -2615,10 +2615,11 @@ func main() {
 				return
 			}
 
-			expiresAt := time.Now().Add(time.Duration(req.ExpiresInHours) * time.Hour)
+			expiresAt := time.Now().UTC().Add(time.Duration(req.ExpiresInHours) * time.Hour)
+			expiresAtStr := expiresAt.Format("2006-01-02 15:04:05")
 
 			_, err = db.Exec(`INSERT INTO uat_links (token, issued_to, build_id, max_uses, expires_at) VALUES (?, ?, ?, ?, ?)`,
-				token, req.IssuedTo, buildID, req.MaxUses, expiresAt)
+				token, req.IssuedTo, buildID, req.MaxUses, expiresAtStr)
 			if err != nil {
 				log.Printf("Error creating UAT link: %v", err)
 				w.Header().Set("Content-Type", "application/json")
@@ -2765,6 +2766,23 @@ func main() {
 			return
 		}
 
+		// Ignore link preview bots (Facebook, Slack, iMessage, WhatsApp, etc.)
+		ua := strings.ToLower(r.Header.Get("User-Agent"))
+		if strings.Contains(ua, "facebookexternalhit") ||
+			strings.Contains(ua, "facebot") ||
+			strings.Contains(ua, "slackbot") ||
+			strings.Contains(ua, "whatsapp") ||
+			strings.Contains(ua, "telegrambot") ||
+			strings.Contains(ua, "twitterbot") ||
+			strings.Contains(ua, "linkedinbot") ||
+			strings.Contains(ua, "discordbot") ||
+			strings.Contains(ua, "applebot") ||
+			strings.Contains(ua, "iframely") ||
+			strings.Contains(ua, "preview") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		var linkID int64
 		var filename string
 		var maxUses, useCount int
@@ -2788,14 +2806,8 @@ func main() {
 			return
 		}
 
-		expires, _ := time.Parse("2006-01-02T15:04:05Z07:00", expiresAt)
-		if expires.IsZero() {
-			expires, _ = time.Parse("2006-01-02 15:04:05-07:00", expiresAt)
-		}
-		if expires.IsZero() {
-			expires, _ = time.Parse("2006-01-02 15:04:05", expiresAt)
-		}
-		if !expires.IsZero() && time.Now().After(expires) {
+		expires, _ := time.Parse("2006-01-02 15:04:05", expiresAt)
+		if !expires.IsZero() && time.Now().UTC().After(expires) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprint(w, uatErrorPage("Link Expired", "This download link has expired. Please contact the person who sent you this link for a new one."))
