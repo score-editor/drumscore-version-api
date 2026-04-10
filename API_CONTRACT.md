@@ -685,7 +685,21 @@ Authorization: Bearer <ADMIN_SECRET>
 
 Query: `?status=active` (default), `expired`, or `all`.
 
-### Endpoint 9: Revoke UAT Link
+### Endpoint 9: Reset UAT Link Download Count
+
+```http
+PATCH /api/admin/uat-links/{token}
+Authorization: Bearer <ADMIN_SECRET>
+```
+
+Resets `use_count` to 0 and clears `last_used_at`. Useful when downloads were consumed by link preview bots.
+
+**Response (200):**
+```json
+{ "status": "reset", "token": "<token>" }
+```
+
+### Endpoint 10: Revoke UAT Link
 
 ```http
 DELETE /api/admin/uat-links/{token}
@@ -694,7 +708,7 @@ Authorization: Bearer <ADMIN_SECRET>
 
 Soft-revoke (sets revoked flag, keeps audit trail).
 
-### Endpoint 10: UAT Download (Tester-Facing)
+### Endpoint 11: UAT Download (Tester-Facing)
 
 ```http
 GET /api/uat/download/{token}
@@ -704,7 +718,7 @@ No authentication required — the token IS the authentication.
 - Valid token: serves the file as a download
 - Invalid/expired/revoked/exhausted: returns an HTML error page
 
-### Endpoint 11: UAT Admin Help
+### Endpoint 12: UAT Admin Help
 
 ```http
 GET /api/admin/uat-help

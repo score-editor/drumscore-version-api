@@ -2716,11 +2716,6 @@ func main() {
 			return
 		}
 
-		if r.Method != http.MethodDelete {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
 		token := strings.TrimPrefix(r.URL.Path, "/api/admin/uat-links/")
 		if token == "" || len(token) != 64 {
 			w.Header().Set("Content-Type", "application/json")
@@ -2729,26 +2724,54 @@ func main() {
 			return
 		}
 
-		result, err := db.Exec(`UPDATE uat_links SET revoked = 1 WHERE token = ?`, token)
-		if err != nil {
+		switch r.Method {
+		case http.MethodDelete:
+			result, err := db.Exec(`UPDATE uat_links SET revoked = 1 WHERE token = ?`, token)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to revoke link"})
+				return
+			}
+
+			affected, _ := result.RowsAffected()
+			if affected == 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Link not found"})
+				return
+			}
+
+			log.Printf("UAT link revoked: %s", token)
+
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to revoke link"})
-			return
-		}
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "revoked", "token": token})
 
-		affected, _ := result.RowsAffected()
-		if affected == 0 {
+		case http.MethodPatch:
+			result, err := db.Exec(`UPDATE uat_links SET use_count = 0, last_used_at = NULL WHERE token = ?`, token)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to reset link"})
+				return
+			}
+
+			affected, _ := result.RowsAffected()
+			if affected == 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Link not found"})
+				return
+			}
+
+			log.Printf("UAT link download count reset: %s", token)
+
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(ErrorResponse{Error: "Link not found"})
-			return
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": "reset", "token": token})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-
-		log.Printf("UAT link revoked: %s", token)
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"status": "revoked", "token": token})
 	})
 
 	// UAT download - tester-facing endpoint
@@ -2888,6 +2911,11 @@ LIST LINKS (active|expired|all)
 curl -sk "%s/api/admin/uat-links?status=active" \
   -H "Authorization: Bearer $ADMIN_SECRET"
 
+RESET DOWNLOAD COUNT
+--------------------
+curl -sk -X PATCH %s/api/admin/uat-links/<token> \
+  -H "Authorization: Bearer $ADMIN_SECRET"
+
 REVOKE A LINK
 -------------
 curl -sk -X DELETE %s/api/admin/uat-links/<token> \
@@ -2908,7 +2936,7 @@ NOTES
 - Upload the build first, then create links against it
 - Testers just click the download link — no auth needed for them
 - Set ADMIN_SECRET in your shell: export ADMIN_SECRET=<your-secret>
-`, base, base, base, base, base, base)
+`, base, base, base, base, base, base, base)
 	})
 
 	// Start aggregation job

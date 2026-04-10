@@ -27,6 +27,7 @@ Commands:
   link <name> <version> <platform> <arch>     Create a download link
   builds                        List all builds
   links [active|expired|all]    List links (default: active)
+  reset <token>                 Reset download count for a link
   revoke <token>                Revoke a link
   delete-build <id>             Delete a build
   status                        Show all builds and active links
@@ -37,6 +38,7 @@ Architectures: x86_64, aarch64
 Examples:
   uat-admin.sh upload DrumScoreEditor_macOS_arm64_3.6.0.dmg 3.6.0 macos aarch64
   uat-admin.sh link "John Smith" 3.6.0 macos aarch64
+  uat-admin.sh reset 4410ac59...    (reset download count)
   uat-admin.sh links
   uat-admin.sh status
 EOF
@@ -154,9 +156,26 @@ for l in links:
     print(f\"    Version:  {l.get('version','?')}/{l.get('platform','?')}/{l.get('arch','?')}\")
     print(f\"    Uses:     {l['useCount']}/{l['maxUses']}\")
     print(f\"    Expires:  {expires}\")
-    print(f\"    Token:    {l['token'][:16]}...\")
+    print(f\"    Token:    {l['token']}\")
     print()
 "
+}
+
+reset_link() {
+    local token="$1"
+    if [ -z "$token" ]; then
+        echo "Usage: uat-admin.sh reset <token>"
+        exit 1
+    fi
+
+    local response
+    response=$($CURL -X PATCH "$HOST/api/admin/uat-links/$token" -H "$AUTH")
+
+    if echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='reset'" 2>/dev/null; then
+        echo "  Download count reset: ${token:0:16}..."
+    else
+        echo "Error: $response"
+    fi
 }
 
 revoke_link() {
@@ -210,6 +229,7 @@ case "${1:-help}" in
     link)             create_link "$2" "$3" "$4" "$5" ;;
     builds)           list_builds ;;
     links)            list_links "$2" ;;
+    reset)            reset_link "$2" ;;
     revoke)           revoke_link "$2" ;;
     delete-build)     delete_build "$2" ;;
     status)           show_status ;;
