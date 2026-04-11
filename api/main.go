@@ -2552,7 +2552,12 @@ func main() {
 			return
 		}
 
-		os.Remove(filepath.Join(uatBuildsDir, filename))
+		// Only remove the file if no other build record shares the same filename
+		var otherBuilds int
+		db.QueryRow(`SELECT COUNT(*) FROM uat_builds WHERE filename = ? AND id != ?`, filename, buildID).Scan(&otherBuilds)
+		if otherBuilds == 0 {
+			os.Remove(filepath.Join(uatBuildsDir, filename))
+		}
 		db.Exec(`DELETE FROM uat_builds WHERE id = ?`, buildID)
 
 		log.Printf("UAT build deleted: ID %d (%s)", buildID, filename)
