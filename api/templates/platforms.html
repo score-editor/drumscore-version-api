@@ -489,6 +489,29 @@
         });
     });
 
+    // Weekly totals and EMA (α = 0.3)
+    var totals = weekSet.map(function(w) {
+        var sum = 0;
+        platformSet.forEach(function(p) { sum += lookup[w + '|' + p] || 0; });
+        return sum;
+    });
+    var ema = [];
+    var alpha = 0.3;
+    totals.forEach(function(val, i) {
+        ema.push(i === 0 ? val : alpha * val + (1 - alpha) * ema[i - 1]);
+    });
+    datasets.push({
+        label: 'Avg (EMA)',
+        data: ema,
+        type: 'line',
+        borderColor: '#e74c3c',
+        borderWidth: 2,
+        borderDash: [6, 3],
+        pointRadius: 0,
+        fill: false,
+        order: 0
+    });
+
     new Chart(document.getElementById('weeklyPlatformChart'), {
         type: 'bar',
         data: { labels: labels, datasets: datasets },
