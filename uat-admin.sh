@@ -32,6 +32,11 @@ Commands:
   delete-build <id>             Delete a build
   status                        Show all builds and active links
 
+  share <file> <name> [description]           Upload a file and create a one-time link
+  share-link <name> <file-id> [maxUses]       Create a link for an existing shared file
+  shared-files                                List shared files
+  delete-shared <id>                          Delete a shared file
+
 Platforms: macos, windows, linux
 Architectures: x86_64, aarch64
 
@@ -41,6 +46,8 @@ Examples:
   uat-admin.sh reset 4410ac59...    (reset download count)
   uat-admin.sh links
   uat-admin.sh status
+  uat-admin.sh share manual.pdf "John Smith" "Drum Score Editor manual"
+  uat-admin.sh shared-files
 EOF
 }
 
@@ -212,6 +219,128 @@ delete_build() {
     fi
 }
 
+share_file() {
+    local file="$1" name="$2" description="$3"
+    if [ -z "$file" ] || [ -z "$name" ]; then
+        echo "Usage: uat-admin.sh share <file> <name> [description]"
+        exit 1
+    fi
+    if [ ! -f "$file" ]; then
+        echo "Error: File not found: $file"
+        exit 1
+    fi
+
+    local size=$(du -h "$file" | cut -f1)
+    echo "Uploading $file ($size)..."
+    echo
+
+    # Upload the file
+    local upload_response
+    upload_response=$($CURL -X POST "$HOST/api/admin/shared-files" \
+        -H "$AUTH" \
+        -F "file=@$file" \
+        -F "description=$description")
+
+    local file_id
+    file_id=$(echo "$upload_response" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
+    if [ -z "$file_id" ]; then
+        echo "Error uploading file: $upload_response"
+        exit 1
+    fi
+
+    # Create a download link (3 uses to allow for link preview bots)
+    local link_response
+    link_response=$($CURL -X POST "$HOST/api/admin/uat-links" \
+        -H "$AUTH" \
+        -H "Content-Type: application/json" \
+        -d "{\"issuedTo\":\"$name\",\"sharedFileId\":$file_id,\"maxUses\":3}")
+
+    if echo "$link_response" | python3 -c "import sys,json; json.load(sys.stdin)['token']" >/dev/null 2>&1; then
+        echo "$link_response" | python3 -c "
+import sys, json
+l = json.load(sys.stdin)
+print(f'  File shared with {l[\"issuedTo\"]}')
+print(f'  Uses:     {l[\"maxUses\"]}')
+print(f'  Expires:  {l[\"expiresAt\"]}')
+print()
+print(f'  Send this link:')
+print(f'  {l[\"downloadLink\"]}')
+"
+    else
+        echo "Error creating link: $link_response"
+    fi
+}
+
+share_link() {
+    local name="$1" file_id="$2" max_uses="${3:-1}"
+    if [ -z "$name" ] || [ -z "$file_id" ]; then
+        echo "Usage: uat-admin.sh share-link <name> <file-id> [maxUses]"
+        exit 1
+    fi
+
+    local response
+    response=$($CURL -X POST "$HOST/api/admin/uat-links" \
+        -H "$AUTH" \
+        -H "Content-Type: application/json" \
+        -d "{\"issuedTo\":\"$name\",\"sharedFileId\":$file_id,\"maxUses\":$max_uses}")
+
+    if echo "$response" | python3 -c "import sys,json; json.load(sys.stdin)['token']" >/dev/null 2>&1; then
+        echo "$response" | python3 -c "
+import sys, json
+l = json.load(sys.stdin)
+print(f'  Link created for {l[\"issuedTo\"]}')
+print(f'  Uses:     {l[\"maxUses\"]}')
+print(f'  Expires:  {l[\"expiresAt\"]}')
+print()
+print(f'  Send this link:')
+print(f'  {l[\"downloadLink\"]}')
+"
+    else
+        echo "Error: $response"
+    fi
+}
+
+list_shared_files() {
+    local response
+    response=$($CURL "$HOST/api/admin/shared-files" -H "$AUTH")
+
+    echo "$response" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+files = data.get('files', [])
+if not files:
+    print('  No shared files found.')
+    sys.exit(0)
+print(f'  {len(files)} shared file(s)')
+print()
+print(f'  {\"ID\":<6} {\"Original Name\":<30} {\"Size\":<10} {\"Description\":<20} {\"Uploaded\"}')
+print(f'  {\"-\"*6} {\"-\"*30} {\"-\"*10} {\"-\"*20} {\"-\"*19}')
+for f in files:
+    size = f'{f[\"fileSize\"] / 1048576:.1f} MB'
+    created = f.get('createdAt', '')[:19]
+    desc = f.get('description', '')[:20]
+    name = f.get('originalName', '')[:30]
+    print(f'  {f[\"id\"]:<6} {name:<30} {size:<10} {desc:<20} {created}')
+"
+}
+
+delete_shared() {
+    local id="$1"
+    if [ -z "$id" ]; then
+        echo "Usage: uat-admin.sh delete-shared <id>"
+        exit 1
+    fi
+
+    local response
+    response=$($CURL -X DELETE "$HOST/api/admin/shared-files/$id" -H "$AUTH")
+
+    if echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='deleted'" 2>/dev/null; then
+        echo "  Shared file $id deleted."
+    else
+        echo "Error: $response"
+    fi
+}
+
 show_status() {
     echo "=== UAT Builds ==="
     echo
@@ -232,6 +361,10 @@ case "${1:-help}" in
     reset)            reset_link "$2" ;;
     revoke)           revoke_link "$2" ;;
     delete-build)     delete_build "$2" ;;
+    share)            share_file "$2" "$3" "$4" ;;
+    share-link)       share_link "$2" "$3" "$4" ;;
+    shared-files)     list_shared_files ;;
+    delete-shared)    delete_shared "$2" ;;
     status)           show_status ;;
     *)                echo "Unknown command: $1"; echo; usage; exit 1 ;;
 esac

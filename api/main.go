@@ -206,8 +206,18 @@ type CreateUATLinkRequest struct {
 	Version        string `json:"version"`
 	Platform       string `json:"platform"`
 	Arch           string `json:"arch"`
+	SharedFileID   int64  `json:"sharedFileId"`
 	MaxUses        int    `json:"maxUses"`
 	ExpiresInHours int    `json:"expiresInHours"`
+}
+
+type SharedFile struct {
+	ID           int64  `json:"id"`
+	Filename     string `json:"filename"`
+	OriginalName string `json:"originalName"`
+	FileSize     int64  `json:"fileSize"`
+	Description  string `json:"description"`
+	CreatedAt    string `json:"createdAt"`
 }
 
 type CreateUATLinkResponse struct {
@@ -904,6 +914,15 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 	CREATE INDEX IF NOT EXISTS idx_uat_links_token ON uat_links(token);
 	CREATE INDEX IF NOT EXISTS idx_uat_links_expires ON uat_links(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_uat_builds_version ON uat_builds(version);
+
+	CREATE TABLE IF NOT EXISTS shared_files (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		filename TEXT NOT NULL,
+		original_name TEXT NOT NULL,
+		file_size INTEGER NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -924,6 +943,13 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 			if !strings.Contains(err.Error(), "duplicate column") {
 				return nil, fmt.Errorf("migration failed: %w", err)
 			}
+		}
+	}
+
+	// Migration: add shared_file_id to uat_links
+	if _, err := db.Exec("ALTER TABLE uat_links ADD COLUMN shared_file_id INTEGER"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return nil, fmt.Errorf("migration failed: %w", err)
 		}
 	}
 
@@ -2412,6 +2438,13 @@ func main() {
 				return
 			}
 
+			if !validateVersion(version) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid version format", Details: "Must be semantic version: X.Y.Z"})
+				return
+			}
+
 			if platform != "windows" && platform != "macos" && platform != "linux" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
@@ -2592,15 +2625,28 @@ func main() {
 				return
 			}
 
-			// Find the build
+			// Resolve the target: either a UAT build or a shared file
 			var buildID int64
-			err := db.QueryRow(`SELECT id FROM uat_builds WHERE version = ? AND platform = ? AND arch = ? ORDER BY created_at DESC LIMIT 1`,
-				req.Version, req.Platform, req.Arch).Scan(&buildID)
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotFound)
-				json.NewEncoder(w).Encode(ErrorResponse{Error: "No build found", Details: fmt.Sprintf("No build for %s/%s/%s", req.Version, req.Platform, req.Arch)})
-				return
+			var sharedFileID int64
+			if req.SharedFileID > 0 {
+				// Verify shared file exists
+				err := db.QueryRow(`SELECT id FROM shared_files WHERE id = ?`, req.SharedFileID).Scan(&sharedFileID)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusNotFound)
+					json.NewEncoder(w).Encode(ErrorResponse{Error: "Shared file not found", Details: fmt.Sprintf("No shared file with ID %d", req.SharedFileID)})
+					return
+				}
+			} else {
+				// Find the build
+				err := db.QueryRow(`SELECT id FROM uat_builds WHERE version = ? AND platform = ? AND arch = ? ORDER BY created_at DESC LIMIT 1`,
+					req.Version, req.Platform, req.Arch).Scan(&buildID)
+				if err != nil {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusNotFound)
+					json.NewEncoder(w).Encode(ErrorResponse{Error: "No build found", Details: fmt.Sprintf("No build for %s/%s/%s", req.Version, req.Platform, req.Arch)})
+					return
+				}
 			}
 
 			// Defaults
@@ -2623,8 +2669,13 @@ func main() {
 			expiresAt := time.Now().UTC().Add(time.Duration(req.ExpiresInHours) * time.Hour)
 			expiresAtStr := expiresAt.Format("2006-01-02 15:04:05")
 
-			_, err = db.Exec(`INSERT INTO uat_links (token, issued_to, build_id, max_uses, expires_at) VALUES (?, ?, ?, ?, ?)`,
-				token, req.IssuedTo, buildID, req.MaxUses, expiresAtStr)
+			if sharedFileID > 0 {
+				_, err = db.Exec(`INSERT INTO uat_links (token, issued_to, build_id, shared_file_id, max_uses, expires_at) VALUES (?, ?, 0, ?, ?, ?)`,
+					token, req.IssuedTo, sharedFileID, req.MaxUses, expiresAtStr)
+			} else {
+				_, err = db.Exec(`INSERT INTO uat_links (token, issued_to, build_id, max_uses, expires_at) VALUES (?, ?, ?, ?, ?)`,
+					token, req.IssuedTo, buildID, req.MaxUses, expiresAtStr)
+			}
 			if err != nil {
 				log.Printf("Error creating UAT link: %v", err)
 				w.Header().Set("Content-Type", "application/json")
@@ -2664,18 +2715,24 @@ func main() {
 			var query string
 			switch status {
 			case "active":
-				query = `SELECT l.id, l.token, l.issued_to, l.build_id, b.version, b.platform, b.arch, l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
-					FROM uat_links l JOIN uat_builds b ON l.build_id = b.id
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+					FROM uat_links l
+					LEFT JOIN uat_builds b ON l.build_id = b.id AND l.shared_file_id IS NULL
+					LEFT JOIN shared_files sf ON l.shared_file_id = sf.id
 					WHERE l.revoked = 0 AND l.expires_at > datetime('now') AND l.use_count < l.max_uses
 					ORDER BY l.created_at DESC`
 			case "expired":
-				query = `SELECT l.id, l.token, l.issued_to, l.build_id, b.version, b.platform, b.arch, l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
-					FROM uat_links l JOIN uat_builds b ON l.build_id = b.id
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+					FROM uat_links l
+					LEFT JOIN uat_builds b ON l.build_id = b.id AND l.shared_file_id IS NULL
+					LEFT JOIN shared_files sf ON l.shared_file_id = sf.id
 					WHERE l.revoked = 1 OR l.expires_at <= datetime('now') OR l.use_count >= l.max_uses
 					ORDER BY l.created_at DESC`
 			case "all":
-				query = `SELECT l.id, l.token, l.issued_to, l.build_id, b.version, b.platform, b.arch, l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
-					FROM uat_links l JOIN uat_builds b ON l.build_id = b.id
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+					FROM uat_links l
+					LEFT JOIN uat_builds b ON l.build_id = b.id AND l.shared_file_id IS NULL
+					LEFT JOIN shared_files sf ON l.shared_file_id = sf.id
 					ORDER BY l.created_at DESC`
 			default:
 				w.Header().Set("Content-Type", "application/json")
@@ -2779,6 +2836,164 @@ func main() {
 		}
 	})
 
+	// Shared files - upload and list
+	http.HandleFunc("/api/admin/shared-files", func(w http.ResponseWriter, r *http.Request) {
+		if !validateAdminAuth(r, adminSecret) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPost:
+			if err := r.ParseMultipartForm(500 << 20); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to parse upload", Details: err.Error()})
+				return
+			}
+
+			description := r.FormValue("description")
+
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Missing file"})
+				return
+			}
+			defer file.Close()
+
+			originalName := filepath.Base(header.Filename)
+			// Prefix with random hex to avoid collisions
+			prefix := make([]byte, 8)
+			rand.Read(prefix)
+			safeFilename := fmt.Sprintf("shared-%s-%s", hex.EncodeToString(prefix), originalName)
+			destPath := filepath.Join(uatBuildsDir, safeFilename)
+
+			out, err := os.Create(destPath)
+			if err != nil {
+				log.Printf("Error creating shared file: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to store file"})
+				return
+			}
+			defer out.Close()
+
+			written, err := io.Copy(out, file)
+			if err != nil {
+				os.Remove(destPath)
+				log.Printf("Error writing shared file: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to write file"})
+				return
+			}
+
+			result, err := db.Exec(`INSERT INTO shared_files (filename, original_name, file_size, description) VALUES (?, ?, ?, ?)`,
+				safeFilename, originalName, written, description)
+			if err != nil {
+				os.Remove(destPath)
+				log.Printf("Error inserting shared file: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to record file"})
+				return
+			}
+
+			fileID, _ := result.LastInsertId()
+			log.Printf("Shared file uploaded: %s (%d bytes)", originalName, written)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(SharedFile{
+				ID:           fileID,
+				Filename:     safeFilename,
+				OriginalName: originalName,
+				FileSize:     written,
+				Description:  description,
+			})
+
+		case http.MethodGet:
+			rows, err := db.Query(`SELECT id, filename, original_name, file_size, description, created_at FROM shared_files ORDER BY created_at DESC`)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to query shared files"})
+				return
+			}
+			defer rows.Close()
+
+			files := []SharedFile{}
+			for rows.Next() {
+				var f SharedFile
+				if err := rows.Scan(&f.ID, &f.Filename, &f.OriginalName, &f.FileSize, &f.Description, &f.CreatedAt); err != nil {
+					continue
+				}
+				files = append(files, f)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"files": files, "total": len(files)})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// Delete a shared file
+	http.HandleFunc("/api/admin/shared-files/", func(w http.ResponseWriter, r *http.Request) {
+		if !validateAdminAuth(r, adminSecret) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Unauthorized"})
+			return
+		}
+
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		idStr := strings.TrimPrefix(r.URL.Path, "/api/admin/shared-files/")
+		fileID, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid file ID"})
+			return
+		}
+
+		var filename string
+		err = db.QueryRow(`SELECT filename FROM shared_files WHERE id = ?`, fileID).Scan(&filename)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "File not found"})
+			return
+		}
+
+		// Check if any active links reference this file
+		var activeLinks int
+		db.QueryRow(`SELECT COUNT(*) FROM uat_links WHERE shared_file_id = ? AND revoked = 0 AND expires_at > datetime('now') AND use_count < max_uses`, fileID).Scan(&activeLinks)
+		if activeLinks > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "File has active links", Details: fmt.Sprintf("%d active link(s) reference this file — revoke them first", activeLinks)})
+			return
+		}
+
+		os.Remove(filepath.Join(uatBuildsDir, filename))
+		db.Exec(`DELETE FROM shared_files WHERE id = ?`, fileID)
+
+		log.Printf("Shared file deleted: ID %d (%s)", fileID, filename)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "deleted", "id": fileID})
+	})
+
 	// UAT download - tester-facing endpoint
 	http.HandleFunc("/api/uat/download/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -2812,14 +3027,16 @@ func main() {
 		}
 
 		var linkID int64
-		var filename string
+		var filename, displayName string
 		var maxUses, useCount int
 		var expiresAt string
 		var revoked int
 
-		err := db.QueryRow(`SELECT l.id, b.filename, l.max_uses, l.use_count, l.expires_at, l.revoked
-			FROM uat_links l JOIN uat_builds b ON l.build_id = b.id
-			WHERE l.token = ?`, token).Scan(&linkID, &filename, &maxUses, &useCount, &expiresAt, &revoked)
+		err := db.QueryRow(`SELECT l.id, COALESCE(sf.filename, b.filename), COALESCE(sf.original_name, b.filename), l.max_uses, l.use_count, l.expires_at, l.revoked
+			FROM uat_links l
+			LEFT JOIN uat_builds b ON l.build_id = b.id AND l.shared_file_id IS NULL
+			LEFT JOIN shared_files sf ON l.shared_file_id = sf.id
+			WHERE l.token = ?`, token).Scan(&linkID, &filename, &displayName, &maxUses, &useCount, &expiresAt, &revoked)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusNotFound)
@@ -2865,7 +3082,7 @@ func main() {
 		log.Printf("UAT download: token=%s file=%s (use %d/%d)", token[:12]+"...", filename, useCount+1, maxUses)
 
 		// Serve the file
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, displayName))
 		http.ServeFile(w, r, filePath)
 	})
 
