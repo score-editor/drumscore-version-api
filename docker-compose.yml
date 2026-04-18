@@ -67,3 +67,8 @@ services:
 networks:
   version-api-network:
     driver: bridge
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+        - subnet: fd12:3456:789a:2::/64
