@@ -5,7 +5,7 @@
 #
 
 HOST="${UAT_HOST:-https://droid1.local}"
-CURL="curl -sk"
+CURL="curl -sSk"
 
 if [ -z "$ADMIN_SECRET" ]; then
     echo "Error: ADMIN_SECRET not set. Run: export ADMIN_SECRET=<your-secret>"
