@@ -1,19 +1,72 @@
 #!/bin/bash
 #
 # UAT Admin Tool for Drum Score Editor
-# Manages builds and download links on droid1
+# Manages builds and download links on snare (via WireGuard)
 #
 
-HOST="${UAT_HOST:-https://droid1.local}"
-CURL="curl -sSk"
+HOST="${UAT_HOST:-https://10.77.77.1}"
 
 if [ -z "$ADMIN_SECRET" ]; then
     echo "Error: ADMIN_SECRET not set. Run: export ADMIN_SECRET=<your-secret>"
-    echo "Hint: SSH to droid1 and 'cat .env' if you've forgotten it"
+    echo "Hint: SSH to snare and 'cat .env' if you've forgotten it"
     exit 1
 fi
 
 AUTH="Authorization: Bearer $ADMIN_SECRET"
+
+# Run curl, validate response. On success sets API_BODY (guaranteed non-empty JSON).
+# On failure prints a friendly error and returns 1.
+# Usage: api_call <METHOD> <path> [extra-curl-args...]
+api_call() {
+    local method="$1" path="$2"
+    shift 2
+
+    local body_file stderr_file status curl_exit err
+    body_file=$(mktemp)
+    stderr_file=$(mktemp)
+
+    status=$(curl -sSk -w "%{http_code}" -o "$body_file" \
+        -X "$method" "$HOST$path" -H "$AUTH" "$@" 2>"$stderr_file")
+    curl_exit=$?
+    err=$(cat "$stderr_file")
+    API_BODY=$(cat "$body_file")
+    rm -f "$body_file" "$stderr_file"
+
+    if [ "$curl_exit" -ne 0 ] || [ "$status" = "000" ]; then
+        echo "Error: could not reach $HOST" >&2
+        [ -n "$err" ] && echo "  $err" >&2
+        echo "  Hint: admin endpoints require the WireGuard tunnel — is wg up?" >&2
+        return 1
+    fi
+
+    if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+        case "$status" in
+            401|403)
+                echo "Error: HTTP $status from $HOST$path — check ADMIN_SECRET" >&2 ;;
+            404)
+                echo "Error: HTTP 404 from $HOST$path" >&2
+                echo "  Admin endpoints are local-network only. Access via WireGuard" >&2
+                echo "  (default UAT_HOST=https://10.77.77.1) — public/Cloudflare returns 404." >&2 ;;
+            *)
+                echo "Error: HTTP $status from $HOST$path" >&2 ;;
+        esac
+        [ -n "$API_BODY" ] && echo "  Body: ${API_BODY:0:300}" >&2
+        return 1
+    fi
+
+    if [ -z "$API_BODY" ]; then
+        echo "Error: empty response from $HOST$path (HTTP $status)" >&2
+        return 1
+    fi
+
+    if ! echo "$API_BODY" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then
+        echo "Error: non-JSON response from $HOST$path" >&2
+        echo "  Body: ${API_BODY:0:300}" >&2
+        return 1
+    fi
+
+    return 0
+}
 
 usage() {
     cat <<'EOF'
@@ -62,31 +115,29 @@ upload_build() {
         exit 1
     fi
 
-    local size=$(du -h "$file" | cut -f1)
+    local size
+    size=$(du -h "$file" | cut -f1)
     echo "Uploading $file ($size) as $version/$platform/$arch..."
     echo
 
-    local response
-    response=$($CURL -X POST "$HOST/api/admin/uat-builds" \
-        -H "$AUTH" \
+    api_call POST /api/admin/uat-builds \
         -F "file=@$file" \
         -F "version=$version" \
         -F "platform=$platform" \
-        -F "arch=$arch")
+        -F "arch=$arch" || return 1
 
-    if echo "$response" | python3 -c "import sys,json; json.load(sys.stdin)['id']" >/dev/null 2>&1; then
-        echo "$response" | python3 -c "
+    echo "$API_BODY" | python3 -c "
 import sys, json
 b = json.load(sys.stdin)
+if 'id' not in b:
+    print(f'Error: {b}')
+    sys.exit(1)
 print(f\"  Build uploaded successfully\")
 print(f\"  ID:       {b['id']}\")
 print(f\"  Version:  {b['version']}\")
 print(f\"  Platform: {b['platform']}/{b['arch']}\")
 print(f\"  Size:     {b['fileSize'] / 1048576:.1f} MB\")
 "
-    else
-        echo "Error: $response"
-    fi
 }
 
 create_link() {
@@ -96,16 +147,16 @@ create_link() {
         exit 1
     fi
 
-    local response
-    response=$($CURL -X POST "$HOST/api/admin/uat-links" \
-        -H "$AUTH" \
+    api_call POST /api/admin/uat-links \
         -H "Content-Type: application/json" \
-        -d "{\"issuedTo\":\"$name\",\"version\":\"$version\",\"platform\":\"$platform\",\"arch\":\"$arch\"}")
+        -d "{\"issuedTo\":\"$name\",\"version\":\"$version\",\"platform\":\"$platform\",\"arch\":\"$arch\"}" || return 1
 
-    if echo "$response" | python3 -c "import sys,json; json.load(sys.stdin)['token']" >/dev/null 2>&1; then
-        echo "$response" | python3 -c "
+    echo "$API_BODY" | python3 -c "
 import sys, json
 l = json.load(sys.stdin)
+if 'token' not in l:
+    print(f'Error: {l}')
+    sys.exit(1)
 print(f\"  Link created for {l['issuedTo']}\")
 print(f\"  Version:  {l['version']} ({l['platform']}/{l['arch']})\")
 print(f\"  Uses:     {l['maxUses']}\")
@@ -114,16 +165,12 @@ print()
 print(f\"  Send this link:\")
 print(f\"  {l['downloadLink']}\")
 "
-    else
-        echo "Error: $response"
-    fi
 }
 
 list_builds() {
-    local response
-    response=$($CURL "$HOST/api/admin/uat-builds" -H "$AUTH")
+    api_call GET /api/admin/uat-builds || return 1
 
-    echo "$response" | python3 -c "
+    echo "$API_BODY" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 builds = data.get('builds', [])
@@ -143,10 +190,9 @@ for b in builds:
 
 list_links() {
     local status="${1:-active}"
-    local response
-    response=$($CURL "$HOST/api/admin/uat-links?status=$status" -H "$AUTH")
+    api_call GET "/api/admin/uat-links?status=$status" || return 1
 
-    echo "$response" | python3 -c "
+    echo "$API_BODY" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 links = data.get('links', [])
@@ -175,13 +221,12 @@ reset_link() {
         exit 1
     fi
 
-    local response
-    response=$($CURL -X PATCH "$HOST/api/admin/uat-links/$token" -H "$AUTH")
+    api_call PATCH "/api/admin/uat-links/$token" || return 1
 
-    if echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='reset'" 2>/dev/null; then
+    if echo "$API_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='reset'" 2>/dev/null; then
         echo "  Download count reset: ${token:0:16}..."
     else
-        echo "Error: $response"
+        echo "Error: unexpected response: $API_BODY"
     fi
 }
 
@@ -192,13 +237,12 @@ revoke_link() {
         exit 1
     fi
 
-    local response
-    response=$($CURL -X DELETE "$HOST/api/admin/uat-links/$token" -H "$AUTH")
+    api_call DELETE "/api/admin/uat-links/$token" || return 1
 
-    if echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='revoked'" 2>/dev/null; then
+    if echo "$API_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='revoked'" 2>/dev/null; then
         echo "  Link revoked: ${token:0:16}..."
     else
-        echo "Error: $response"
+        echo "Error: unexpected response: $API_BODY"
     fi
 }
 
@@ -209,13 +253,12 @@ delete_build() {
         exit 1
     fi
 
-    local response
-    response=$($CURL -X DELETE "$HOST/api/admin/uat-builds/$id" -H "$AUTH")
+    api_call DELETE "/api/admin/uat-builds/$id" || return 1
 
-    if echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='deleted'" 2>/dev/null; then
+    if echo "$API_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='deleted'" 2>/dev/null; then
         echo "  Build $id deleted."
     else
-        echo "Error: $response"
+        echo "Error: unexpected response: $API_BODY"
     fi
 }
 
@@ -230,35 +273,33 @@ share_file() {
         exit 1
     fi
 
-    local size=$(du -h "$file" | cut -f1)
+    local size
+    size=$(du -h "$file" | cut -f1)
     echo "Uploading $file ($size)..."
     echo
 
-    # Upload the file
-    local upload_response
-    upload_response=$($CURL -X POST "$HOST/api/admin/shared-files" \
-        -H "$AUTH" \
+    api_call POST /api/admin/shared-files \
         -F "file=@$file" \
-        -F "description=$description")
+        -F "description=$description" || return 1
 
     local file_id
-    file_id=$(echo "$upload_response" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
+    file_id=$(echo "$API_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
     if [ -z "$file_id" ]; then
-        echo "Error uploading file: $upload_response"
+        echo "Error uploading file: $API_BODY"
         exit 1
     fi
 
     # Create a download link (3 uses to allow for link preview bots)
-    local link_response
-    link_response=$($CURL -X POST "$HOST/api/admin/uat-links" \
-        -H "$AUTH" \
+    api_call POST /api/admin/uat-links \
         -H "Content-Type: application/json" \
-        -d "{\"issuedTo\":\"$name\",\"sharedFileId\":$file_id,\"maxUses\":3}")
+        -d "{\"issuedTo\":\"$name\",\"sharedFileId\":$file_id,\"maxUses\":3}" || return 1
 
-    if echo "$link_response" | python3 -c "import sys,json; json.load(sys.stdin)['token']" >/dev/null 2>&1; then
-        echo "$link_response" | python3 -c "
+    echo "$API_BODY" | python3 -c "
 import sys, json
 l = json.load(sys.stdin)
+if 'token' not in l:
+    print(f'Error creating link: {l}')
+    sys.exit(1)
 print(f'  File shared with {l[\"issuedTo\"]}')
 print(f'  Uses:     {l[\"maxUses\"]}')
 print(f'  Expires:  {l[\"expiresAt\"]}')
@@ -266,9 +307,6 @@ print()
 print(f'  Send this link:')
 print(f'  {l[\"downloadLink\"]}')
 "
-    else
-        echo "Error creating link: $link_response"
-    fi
 }
 
 share_link() {
@@ -278,16 +316,16 @@ share_link() {
         exit 1
     fi
 
-    local response
-    response=$($CURL -X POST "$HOST/api/admin/uat-links" \
-        -H "$AUTH" \
+    api_call POST /api/admin/uat-links \
         -H "Content-Type: application/json" \
-        -d "{\"issuedTo\":\"$name\",\"sharedFileId\":$file_id,\"maxUses\":$max_uses}")
+        -d "{\"issuedTo\":\"$name\",\"sharedFileId\":$file_id,\"maxUses\":$max_uses}" || return 1
 
-    if echo "$response" | python3 -c "import sys,json; json.load(sys.stdin)['token']" >/dev/null 2>&1; then
-        echo "$response" | python3 -c "
+    echo "$API_BODY" | python3 -c "
 import sys, json
 l = json.load(sys.stdin)
+if 'token' not in l:
+    print(f'Error: {l}')
+    sys.exit(1)
 print(f'  Link created for {l[\"issuedTo\"]}')
 print(f'  Uses:     {l[\"maxUses\"]}')
 print(f'  Expires:  {l[\"expiresAt\"]}')
@@ -295,16 +333,12 @@ print()
 print(f'  Send this link:')
 print(f'  {l[\"downloadLink\"]}')
 "
-    else
-        echo "Error: $response"
-    fi
 }
 
 list_shared_files() {
-    local response
-    response=$($CURL "$HOST/api/admin/shared-files" -H "$AUTH")
+    api_call GET /api/admin/shared-files || return 1
 
-    echo "$response" | python3 -c "
+    echo "$API_BODY" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 files = data.get('files', [])
@@ -331,13 +365,12 @@ delete_shared() {
         exit 1
     fi
 
-    local response
-    response=$($CURL -X DELETE "$HOST/api/admin/shared-files/$id" -H "$AUTH")
+    api_call DELETE "/api/admin/shared-files/$id" || return 1
 
-    if echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='deleted'" 2>/dev/null; then
+    if echo "$API_BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('status')=='deleted'" 2>/dev/null; then
         echo "  Shared file $id deleted."
     else
-        echo "Error: $response"
+        echo "Error: unexpected response: $API_BODY"
     fi
 }
 
