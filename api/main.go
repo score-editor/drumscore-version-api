@@ -536,168 +536,35 @@ func detectLanguage(r *http.Request, available []string) string {
 	return "en"
 }
 
-// Known valid features - whitelist
-var knownFeatures = map[string]bool{
-	// File
-	"file_new":              true,
-	"file_open":             true,
-	"file_save":             true,
-	"file_export_pdf":       true,
-	"file_export_svg":       true,
-	"file_export_png":       true,
-	"file_export_jpg":       true,
-	"file_export_musicxml":  true,
-	"file_import_musicxml":  true,
-	"file_print":            true,
-	"file_properties":       true,
-	// Notation
-	"notation_add_note":         true,
-	"notation_add_rest":         true,
-	"notation_add_tenor":        true,
-	"notation_add_clef":         true,
-	"measure_add":               true,
-	"time_signature_change":     true,
-	"notation_timesig_change":   true,
-	"notation_roll":             true,
-	"notation_tie":              true,
-	"notation_triplet":          true,
-	"notation_accent":           true,
-	"notation_dot":              true,
-	"notation_copy":             true,
-	"notation_cut":              true,
-	"notation_drag_move":        true,
-	"notation_drag_copy":        true,
-	"notation_drag_to_library":  true,
-	"notation_drag_from_library": true,
-	"component_drag_move":       true,
-	"component_resize":          true,
-	"notation_squeeze":          true,
-	"notation_unison":           true,
-	"notation_beam":             true,
-	"notation_ligature":         true,
-	"notation_dynamics":         true,
-	"notation_backstick":        true,
-	"notation_both_strike":      true,
-	"notation_shoulder_strike":  true,
-	"notation_swap_hands":       true,
-	"notation_barline_change":   true,
-	"notation_volta":            true,
-	"notation_paste":            true,
-	// Grace Notes
-	"grace_note_flam":      true,
-	"grace_note_drag":      true,
-	"grace_note_swiss":     true,
-	"grace_note_rough":     true,
-	"grace_note_open_drag": true,
-	// Staff
-	"staff_insert":         true,
-	"staff_append":         true,
-	"staff_delete":         true,
-	"staff_clone":          true,
-	"staff_second_time":    true,
-	"staff_toggle_repeats": true,
-	"staff_point_size":     true,
-	// Part
-	"part_insert": true,
-	"part_append": true,
-	// Tools
-	"tools_beautify":     true,
-	"tools_redistribute": true,
-	"tools_align":        true,
-	"tools_block_edit":   true,
-	// Edit
-	"edit_undo":   true,
-	"edit_redo":   true,
-	"edit_delete": true,
-	// View
-	"zoom_in":  true,
-	"zoom_out": true,
-	// Playback
-	"playback_start": true,
-	// Help
-	"donate_kofi": true,
+// Known valid features - loaded from features.json at startup
+// (single source of truth: dse-mxml/AnalyticsFeature.java enum)
+var (
+	knownFeatures     map[string]bool
+	featureCategories map[string]string
+)
+
+func loadFeatures(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	var raw map[string]string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if len(raw) == 0 {
+		return fmt.Errorf("%s contained no features — refusing to start with empty allowlist", path)
+	}
+	kf := make(map[string]bool, len(raw))
+	for name := range raw {
+		kf[name] = true
+	}
+	knownFeatures = kf
+	featureCategories = raw
+	log.Printf("Loaded %d features from %s", len(raw), path)
+	return nil
 }
 
-var featureCategories = map[string]string{
-	// File
-	"file_new":             "File",
-	"file_open":            "File",
-	"file_save":            "File",
-	"file_export_pdf":      "File",
-	"file_export_svg":      "File",
-	"file_export_png":      "File",
-	"file_export_jpg":      "File",
-	"file_export_musicxml": "File",
-	"file_import_musicxml": "File",
-	"file_print":           "File",
-	"file_properties":      "File",
-	// Notation
-	"notation_add_note":        "Notation",
-	"notation_add_rest":        "Notation",
-	"notation_add_tenor":       "Notation",
-	"notation_add_clef":        "Notation",
-	"measure_add":              "Notation",
-	"time_signature_change":    "Notation",
-	"notation_timesig_change":  "Notation",
-	"notation_roll":            "Notation",
-	"notation_tie":             "Notation",
-	"notation_triplet":         "Notation",
-	"notation_accent":          "Notation",
-	"notation_dot":             "Notation",
-	"notation_copy":                "Notation",
-	"notation_cut":                 "Notation",
-	"notation_drag_move":           "Notation",
-	"notation_drag_copy":           "Notation",
-	"notation_drag_to_library":     "Notation",
-	"notation_drag_from_library":   "Notation",
-	"component_drag_move":          "Notation",
-	"component_resize":             "Notation",
-	"notation_squeeze":             "Notation",
-	"notation_unison":          "Notation",
-	"notation_beam":            "Notation",
-	"notation_ligature":        "Notation",
-	"notation_dynamics":        "Notation",
-	"notation_backstick":       "Notation",
-	"notation_both_strike":     "Notation",
-	"notation_shoulder_strike": "Notation",
-	"notation_swap_hands":      "Notation",
-	"notation_barline_change":  "Notation",
-	"notation_volta":           "Notation",
-	"notation_paste":           "Notation",
-	// Grace Notes
-	"grace_note_flam":      "GraceNotes",
-	"grace_note_drag":      "GraceNotes",
-	"grace_note_swiss":     "GraceNotes",
-	"grace_note_rough":     "GraceNotes",
-	"grace_note_open_drag": "GraceNotes",
-	// Staff
-	"staff_insert":         "Staff",
-	"staff_append":         "Staff",
-	"staff_delete":         "Staff",
-	"staff_clone":          "Staff",
-	"staff_second_time":    "Staff",
-	"staff_toggle_repeats": "Staff",
-	"staff_point_size":     "Staff",
-	// Part
-	"part_insert": "Part",
-	"part_append": "Part",
-	// Tools
-	"tools_beautify":     "Tools",
-	"tools_redistribute": "Tools",
-	"tools_align":        "Tools",
-	"tools_block_edit":   "Tools",
-	// Edit
-	"edit_undo":   "Edit",
-	"edit_redo":   "Edit",
-	"edit_delete": "Edit",
-	// View
-	"zoom_in":  "View",
-	"zoom_out": "View",
-	// Playback
-	"playback_start": "Playback",
-	// Help
-	"donate_kofi": "Help",
-}
 
 var validOSFamilies = map[string]bool{
 	"Windows": true,
@@ -1487,6 +1354,15 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
+
+	// Load feature allowlist (fail-closed: refuse to start without it)
+	featuresPath := os.Getenv("FEATURES_FILE")
+	if featuresPath == "" {
+		featuresPath = "/app/features.json"
+	}
+	if err := loadFeatures(featuresPath); err != nil {
+		log.Fatalf("Cannot start without feature allowlist: %v", err)
+	}
 
 	// Load release notes
 	releaseNotesPath := os.Getenv("RELEASE_NOTES_PATH")

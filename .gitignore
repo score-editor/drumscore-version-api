@@ -10,6 +10,9 @@ data/
 # Release notes (runtime data)
 release-notes/
 
+# Feature allowlist (generated at app release time from dse-mxml AnalyticsFeature enum)
+features.json
+
 # Environment files and secrets
 .env
 .env.local

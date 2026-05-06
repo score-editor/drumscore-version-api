@@ -10,6 +10,7 @@ services:
       - ./config:/app/config:ro
       - ./data:/app/data
       - ./release-notes:/app/release-notes:ro
+      - ./features.json:/app/features.json:ro
     environment:
       - CONFIG_PATH=/app/config/version-multiplatform.json
       - DB_PATH=/app/data/analytics.db
