@@ -557,6 +557,7 @@ var knownFeatures = map[string]bool{
 	"notation_add_clef":         true,
 	"measure_add":               true,
 	"time_signature_change":     true,
+	"notation_timesig_change":   true,
 	"notation_roll":             true,
 	"notation_tie":              true,
 	"notation_triplet":          true,
@@ -613,6 +614,8 @@ var knownFeatures = map[string]bool{
 	"zoom_out": true,
 	// Playback
 	"playback_start": true,
+	// Help
+	"donate_kofi": true,
 }
 
 var featureCategories = map[string]string{
@@ -635,6 +638,7 @@ var featureCategories = map[string]string{
 	"notation_add_clef":        "Notation",
 	"measure_add":              "Notation",
 	"time_signature_change":    "Notation",
+	"notation_timesig_change":  "Notation",
 	"notation_roll":            "Notation",
 	"notation_tie":             "Notation",
 	"notation_triplet":         "Notation",
@@ -691,6 +695,8 @@ var featureCategories = map[string]string{
 	"zoom_out": "View",
 	// Playback
 	"playback_start": "Playback",
+	// Help
+	"donate_kofi": "Help",
 }
 
 var validOSFamilies = map[string]bool{
