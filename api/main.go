@@ -826,6 +826,13 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		}
 	}
 
+	// Migration: add original_name to uat_builds (NULL for pre-migration rows; download falls back to filename)
+	if _, err := db.Exec("ALTER TABLE uat_builds ADD COLUMN original_name TEXT"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return nil, fmt.Errorf("migration failed: %w", err)
+		}
+	}
+
 	// Add indexes on edition for raw tables
 	editionIndexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_version_checks_edition ON version_checks(edition)",
@@ -2349,8 +2356,10 @@ func main() {
 			}
 			defer file.Close()
 
-			// Store file as version-platform-arch-originalname
-			safeFilename := fmt.Sprintf("%s-%s-%s-%s", version, platform, arch, filepath.Base(header.Filename))
+			// Store file as version-platform-arch-originalname on disk to avoid clashes;
+			// keep the original filename so downloads serve it under its uploaded name.
+			originalName := filepath.Base(header.Filename)
+			safeFilename := fmt.Sprintf("%s-%s-%s-%s", version, platform, arch, originalName)
 			destPath := filepath.Join(uatBuildsDir, safeFilename)
 
 			out, err := os.Create(destPath)
@@ -2373,8 +2382,8 @@ func main() {
 				return
 			}
 
-			result, err := db.Exec(`INSERT INTO uat_builds (version, platform, arch, filename, file_size) VALUES (?, ?, ?, ?, ?)`,
-				version, platform, arch, safeFilename, written)
+			result, err := db.Exec(`INSERT INTO uat_builds (version, platform, arch, filename, original_name, file_size) VALUES (?, ?, ?, ?, ?, ?)`,
+				version, platform, arch, safeFilename, originalName, written)
 			if err != nil {
 				os.Remove(destPath)
 				log.Printf("Error inserting UAT build: %v", err)
@@ -2914,7 +2923,7 @@ func main() {
 		var expiresAt string
 		var revoked int
 
-		err := db.QueryRow(`SELECT l.id, COALESCE(sf.filename, b.filename), COALESCE(sf.original_name, b.filename), l.max_uses, l.use_count, l.expires_at, l.revoked
+		err := db.QueryRow(`SELECT l.id, COALESCE(sf.filename, b.filename), COALESCE(sf.original_name, b.original_name, b.filename), l.max_uses, l.use_count, l.expires_at, l.revoked
 			FROM uat_links l
 			LEFT JOIN uat_builds b ON l.build_id = b.id AND l.shared_file_id IS NULL
 			LEFT JOIN shared_files sf ON l.shared_file_id = sf.id
