@@ -81,6 +81,19 @@ Content-Type: application/json
 
 ## Endpoint 2: Analytics Batch
 
+> **Multi-producer note.** This endpoint is currently single-producer (the DSE
+> desktop app). Admitting the cloud backend as a second producer adds an
+> optional `source` field (default `"dse-app"`) and a separate allowlist file
+> for `cloud.*` event names. That contract is decided in
+> **drumscore-cloud `docs/adr/0036-analytics-collector-multi-producer-contract.md`**
+> and sequenced in [CLOUD_ANALYTICS_PLAN.md](CLOUD_ANALYTICS_PLAN.md).
+> Two things to know before touching analytics here:
+> **(1)** `features.json` is regenerated from the dse-mxml `AnalyticsFeature`
+> enum at release time — never hand-add non-app names to it;
+> **(2)** the allowlist is fail-closed *per batch*, so one unknown name rejects
+> every event alongside it.
+> The fields below describe what is implemented **today**.
+
 ### Request
 ```http
 POST /api/analytics/batch
