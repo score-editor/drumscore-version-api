@@ -1,0 +1,10 @@
+{
+  "score.created": "Score",
+  "score.updated": "Score",
+  "score.deleted": "Score",
+  "image.stored": "Image",
+  "share.minted": "Share",
+  "viewer.verified": "Share",
+  "sync.subscribed": "Sync",
+  "error": "Error"
+}
