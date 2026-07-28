@@ -204,6 +204,51 @@ type FeatureAnalytics struct {
 	TotalUniqueClients int64
 }
 
+// Cloud dashboard structures (ADR-0036).
+//
+// The metric vocabulary deliberately differs from FeatureAnalytics: there,
+// client_id is a desktop install and per-client rates are meaningful. Here
+// instance_id is a server (there will be one to three), so the population
+// measure is distinct accounts, not distinct clients.
+type CloudEventPopularity struct {
+	EventName string
+	Category  string
+	Total     int64
+	Accounts  int64
+}
+
+type CloudTimeBucket struct {
+	Bucket    string
+	EventName string
+	Total     int64
+}
+
+// CloudBreakdown is a generic name/count pair used for the props-derived
+// tables (share kind, error class) and the per-instance table.
+type CloudBreakdown struct {
+	Title string
+	Rows  []CloudBreakdownRow
+}
+
+type CloudBreakdownRow struct {
+	Label string
+	Total int64
+}
+
+type CloudAnalytics struct {
+	Period          string
+	PeriodLabel     string
+	EventStats      []CloudEventPopularity
+	TimeBucketsJSON string
+	TimeGranularity string
+	Breakdowns      []CloudBreakdown
+	GeneratedAt     string
+	TotalEvents     int64
+	TotalAccounts   int64
+	TotalInstances  int64
+	TotalErrors     int64
+}
+
 // UAT build and link types
 type UATBuild struct {
 	ID        int64  `json:"id"`
@@ -1472,6 +1517,68 @@ func getClientCountry(r *http.Request) string {
 	return r.Header.Get("CF-IPCountry")
 }
 
+// Dashboard period handling, shared by /platforms, /analytics and /cloud.
+//
+// Each page previously carried its own copy of this switch; a third copy was
+// one page too many. The bucket expression is parameterised by timestamp
+// column because the tables differ (analytics_events.timestamp,
+// cloud_events.occurred_at).
+type periodSpec struct {
+	Period      string
+	Label       string
+	TimeFilter  string // SQL expression for the start of the window
+	Granularity string // human label for the chart bucket size
+	bucketFmt   string // {ts} is replaced with the timestamp column
+}
+
+// BucketExpr returns the SQL expression that buckets the given timestamp
+// column for this period.
+func (p periodSpec) BucketExpr(column string) string {
+	return strings.ReplaceAll(p.bucketFmt, "{ts}", column)
+}
+
+var dashboardPeriods = map[string]periodSpec{
+	"hour": {
+		Period: "hour", Label: "Last Hour",
+		TimeFilter:  "datetime('now', '-1 hour')",
+		Granularity: "10 min",
+		bucketFmt:   "strftime('%Y-%m-%d %H:', {ts}) || printf('%02d', (CAST(strftime('%M', {ts}) AS INTEGER) / 10) * 10)",
+	},
+	"day": {
+		Period: "day", Label: "Last 24 Hours",
+		TimeFilter:  "datetime('now', '-1 day')",
+		Granularity: "hour",
+		bucketFmt:   "strftime('%Y-%m-%d %H:00', {ts})",
+	},
+	"week": {
+		Period: "week", Label: "Last 7 Days",
+		TimeFilter:  "datetime('now', '-7 days')",
+		Granularity: "day",
+		bucketFmt:   "strftime('%Y-%m-%d', {ts})",
+	},
+	"month": {
+		Period: "month", Label: "Last 30 Days",
+		TimeFilter:  "datetime('now', '-30 days')",
+		Granularity: "day",
+		bucketFmt:   "strftime('%Y-%m-%d', {ts})",
+	},
+	"year": {
+		Period: "year", Label: "Last Year",
+		TimeFilter:  "datetime('now', '-365 days')",
+		Granularity: "month",
+		bucketFmt:   "strftime('%Y-%m', {ts})",
+	},
+}
+
+// resolvePeriod maps a ?period= query value to its spec, defaulting to "day".
+func resolvePeriod(period string) (periodSpec, bool) {
+	if period == "" {
+		period = "day"
+	}
+	spec, ok := dashboardPeriods[period]
+	return spec, ok
+}
+
 func main() {
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
@@ -1934,41 +2041,12 @@ func main() {
 			return
 		}
 
-		// Get period from query parameter (default: day)
-		period := r.URL.Query().Get("period")
-		if period == "" {
-			period = "day"
-		}
-
-		// Validate period
-		validPeriods := map[string]string{
-			"hour":  "Last Hour",
-			"day":   "Last 24 Hours",
-			"week":  "Last 7 Days",
-			"month": "Last 30 Days",
-			"year":  "Last Year",
-		}
-
-		periodLabel, validPeriod := validPeriods[period]
-		if !validPeriod {
+		spec, ok := resolvePeriod(r.URL.Query().Get("period"))
+		if !ok {
 			http.Error(w, "Invalid period. Use: hour, day, week, month, or year", http.StatusBadRequest)
 			return
 		}
-
-		// Build time filter based on period
-		var timeFilter string
-		switch period {
-		case "hour":
-			timeFilter = "datetime('now', '-1 hour')"
-		case "day":
-			timeFilter = "datetime('now', '-1 day')"
-		case "week":
-			timeFilter = "datetime('now', '-7 days')"
-		case "month":
-			timeFilter = "datetime('now', '-30 days')"
-		case "year":
-			timeFilter = "datetime('now', '-365 days')"
-		}
+		period, periodLabel, timeFilter := spec.Period, spec.Label, spec.TimeFilter
 
 		// Query platform/arch stats
 		platformQuery := fmt.Sprintf(`
@@ -2203,56 +2281,14 @@ func main() {
 			return
 		}
 
-		period := r.URL.Query().Get("period")
-		if period == "" {
-			period = "day"
-		}
-
-		validPeriods := map[string]string{
-			"hour":  "Last Hour",
-			"day":   "Last 24 Hours",
-			"week":  "Last 7 Days",
-			"month": "Last 30 Days",
-			"year":  "Last Year",
-		}
-
-		periodLabel, validPeriod := validPeriods[period]
-		if !validPeriod {
+		spec, ok := resolvePeriod(r.URL.Query().Get("period"))
+		if !ok {
 			http.Error(w, "Invalid period. Use: hour, day, week, month, or year", http.StatusBadRequest)
 			return
 		}
-
-		var timeFilter string
-		switch period {
-		case "hour":
-			timeFilter = "datetime('now', '-1 hour')"
-		case "day":
-			timeFilter = "datetime('now', '-1 day')"
-		case "week":
-			timeFilter = "datetime('now', '-7 days')"
-		case "month":
-			timeFilter = "datetime('now', '-30 days')"
-		case "year":
-			timeFilter = "datetime('now', '-365 days')"
-		}
-
-		// Time bucketing format for Chart.js
-		var timeBucketFormat string
-		var timeGranularity string
-		switch period {
-		case "hour":
-			timeBucketFormat = "strftime('%Y-%m-%d %H:', timestamp) || printf('%02d', (CAST(strftime('%M', timestamp) AS INTEGER) / 10) * 10)"
-			timeGranularity = "10 min"
-		case "day":
-			timeBucketFormat = "strftime('%Y-%m-%d %H:00', timestamp)"
-			timeGranularity = "hour"
-		case "week", "month":
-			timeBucketFormat = "strftime('%Y-%m-%d', timestamp)"
-			timeGranularity = "day"
-		case "year":
-			timeBucketFormat = "strftime('%Y-%m', timestamp)"
-			timeGranularity = "month"
-		}
+		period, periodLabel, timeFilter := spec.Period, spec.Label, spec.TimeFilter
+		timeBucketFormat := spec.BucketExpr("timestamp")
+		timeGranularity := spec.Granularity
 
 		// Query 1: Feature popularity
 		featureQuery := fmt.Sprintf(`
@@ -2511,6 +2547,175 @@ func main() {
 
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("Error executing analytics template: %v", err)
+		}
+	})
+
+	// Cloud backend dashboard endpoint (ADR-0036)
+	http.HandleFunc("/cloud", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		spec, ok := resolvePeriod(r.URL.Query().Get("period"))
+		if !ok {
+			http.Error(w, "Invalid period. Use: hour, day, week, month, or year", http.StatusBadRequest)
+			return
+		}
+		timeFilter := spec.TimeFilter
+
+		data := CloudAnalytics{
+			Period:          spec.Period,
+			PeriodLabel:     spec.Label,
+			TimeGranularity: spec.Granularity,
+			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+		}
+
+		// Summary: totals across the window. Distinct accounts is the cloud
+		// analogue of "unique clients" - instance count is reported separately
+		// because it measures our fleet, not our users.
+		summaryQuery := fmt.Sprintf(`
+			SELECT
+				COUNT(*),
+				COUNT(DISTINCT account_hash),
+				COUNT(DISTINCT instance_id),
+				COALESCE(SUM(CASE WHEN event_name = 'error' THEN 1 ELSE 0 END), 0)
+			FROM cloud_events
+			WHERE occurred_at >= %s
+		`, timeFilter)
+		if err := db.QueryRow(summaryQuery).Scan(&data.TotalEvents, &data.TotalAccounts,
+			&data.TotalInstances, &data.TotalErrors); err != nil {
+			log.Printf("Error querying cloud summary: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// Event popularity
+		popularityQuery := fmt.Sprintf(`
+			SELECT
+				event_name,
+				COUNT(*) as total,
+				COUNT(DISTINCT account_hash) as accounts
+			FROM cloud_events
+			WHERE occurred_at >= %s
+			GROUP BY event_name
+			ORDER BY total DESC
+		`, timeFilter)
+
+		rows, err := db.Query(popularityQuery)
+		if err != nil {
+			log.Printf("Error querying cloud event popularity: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var s CloudEventPopularity
+			if err := rows.Scan(&s.EventName, &s.Total, &s.Accounts); err != nil {
+				log.Printf("Error scanning cloud event row: %v", err)
+				continue
+			}
+			s.Category = cloudEventCategories[s.EventName]
+			if s.Category == "" {
+				s.Category = "Other"
+			}
+			data.EventStats = append(data.EventStats, s)
+		}
+
+		// Events over time
+		bucketQuery := fmt.Sprintf(`
+			SELECT %s as bucket, event_name, COUNT(*) as total
+			FROM cloud_events
+			WHERE occurred_at >= %s
+			GROUP BY bucket, event_name
+			ORDER BY bucket, total DESC
+		`, spec.BucketExpr("occurred_at"), timeFilter)
+
+		bucketRows, err := db.Query(bucketQuery)
+		if err != nil {
+			log.Printf("Error querying cloud time buckets: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer bucketRows.Close()
+
+		var buckets []CloudTimeBucket
+		for bucketRows.Next() {
+			var b CloudTimeBucket
+			if err := bucketRows.Scan(&b.Bucket, &b.EventName, &b.Total); err != nil {
+				log.Printf("Error scanning cloud bucket row: %v", err)
+				continue
+			}
+			buckets = append(buckets, b)
+		}
+		bucketsJSON, _ := json.Marshal(buckets)
+		data.TimeBucketsJSON = string(bucketsJSON)
+
+		// Breakdowns. json_extract is fine here - these are low-cardinality
+		// props enums over a small table. Identity never lives in props, which
+		// is why account_hash is a real column.
+		breakdowns := []struct {
+			title string
+			query string
+		}{
+			{"Share Kind", fmt.Sprintf(`
+				SELECT COALESCE(json_extract(props, '$.kind'), 'unspecified'), COUNT(*)
+				FROM cloud_events
+				WHERE occurred_at >= %s AND event_name = 'share.minted'
+				GROUP BY 1 ORDER BY 2 DESC`, timeFilter)},
+			{"Error Class", fmt.Sprintf(`
+				SELECT COALESCE(json_extract(props, '$.class'), 'unspecified'), COUNT(*)
+				FROM cloud_events
+				WHERE occurred_at >= %s AND event_name = 'error'
+				GROUP BY 1 ORDER BY 2 DESC`, timeFilter)},
+			{"Instance", fmt.Sprintf(`
+				SELECT substr(instance_id, 1, 12), COUNT(*)
+				FROM cloud_events
+				WHERE occurred_at >= %s
+				GROUP BY instance_id ORDER BY 2 DESC`, timeFilter)},
+		}
+
+		for _, b := range breakdowns {
+			brRows, err := db.Query(b.query)
+			if err != nil {
+				log.Printf("Error querying cloud breakdown %q: %v", b.title, err)
+				continue
+			}
+			bd := CloudBreakdown{Title: b.title}
+			for brRows.Next() {
+				var row CloudBreakdownRow
+				if err := brRows.Scan(&row.Label, &row.Total); err != nil {
+					log.Printf("Error scanning cloud breakdown row: %v", err)
+					continue
+				}
+				bd.Rows = append(bd.Rows, row)
+			}
+			brRows.Close()
+			data.Breakdowns = append(data.Breakdowns, bd)
+		}
+
+		funcMap := template.FuncMap{
+			"safeJS": func(s string) template.JS {
+				return template.JS(s)
+			},
+		}
+
+		tmpl, err := template.New("cloud.html").Funcs(funcMap).ParseFS(templateFS, "templates/cloud.html")
+		if err != nil {
+			log.Printf("Error parsing cloud template: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+
+		if err := tmpl.Execute(w, data); err != nil {
+			log.Printf("Error executing cloud template: %v", err)
 		}
 	})
 
