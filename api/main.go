@@ -87,6 +87,36 @@ type ErrorResponse struct {
 	Details string `json:"details,omitempty"`
 }
 
+// Cloud backend event ingest (ADR-0036).
+//
+// Deliberately separate from the AnalyticsBatch pipeline above: that contract
+// describes a desktop installation (os, edition, sessionStart, per-install
+// clientId) and a server has honest values for almost none of it. These two
+// paths share request signing and the batch-size cap, and nothing else — no
+// table, no query, no dashboard.
+type CloudEvent struct {
+	Timestamp   int64                  `json:"timestamp"`
+	Name        string                 `json:"name"`
+	AccountHash string                 `json:"accountHash,omitempty"`
+	Props       map[string]interface{} `json:"props,omitempty"`
+}
+
+type CloudEventBatch struct {
+	InstanceID   string       `json:"instanceId"`
+	CloudVersion string       `json:"cloudVersion,omitempty"`
+	Events       []CloudEvent `json:"events"`
+}
+
+// EventsRejected reports events dropped by the per-event filter. Unlike the
+// desktop endpoint — which fails an entire batch on one unrecognised name —
+// bad events are discarded individually and counted, so a single taxonomy
+// drift cannot cost up to 999 good events.
+type CloudEventBatchResponse struct {
+	Status         string `json:"status"`
+	EventsReceived int    `json:"eventsReceived"`
+	EventsRejected int    `json:"eventsRejected"`
+}
+
 // Platform analytics structures
 type PlatformStats struct {
 	Platform        string
@@ -172,6 +202,51 @@ type FeatureAnalytics struct {
 	GeneratedAt        string
 	TotalUses          int64
 	TotalUniqueClients int64
+}
+
+// Cloud dashboard structures (ADR-0036).
+//
+// The metric vocabulary deliberately differs from FeatureAnalytics: there,
+// client_id is a desktop install and per-client rates are meaningful. Here
+// instance_id is a server (there will be one to three), so the population
+// measure is distinct accounts, not distinct clients.
+type CloudEventPopularity struct {
+	EventName string
+	Category  string
+	Total     int64
+	Accounts  int64
+}
+
+type CloudTimeBucket struct {
+	Bucket    string
+	EventName string
+	Total     int64
+}
+
+// CloudBreakdown is a generic name/count pair used for the props-derived
+// tables (share kind, error class) and the per-instance table.
+type CloudBreakdown struct {
+	Title string
+	Rows  []CloudBreakdownRow
+}
+
+type CloudBreakdownRow struct {
+	Label string
+	Total int64
+}
+
+type CloudAnalytics struct {
+	Period          string
+	PeriodLabel     string
+	EventStats      []CloudEventPopularity
+	TimeBucketsJSON string
+	TimeGranularity string
+	Breakdowns      []CloudBreakdown
+	GeneratedAt     string
+	TotalEvents     int64
+	TotalAccounts   int64
+	TotalInstances  int64
+	TotalErrors     int64
 }
 
 // UAT build and link types
@@ -543,17 +618,37 @@ var (
 	featureCategories map[string]string
 )
 
-func loadFeatures(path string) error {
+// Cloud event allowlist - loaded from cloud-events.json at startup.
+// Unlike features.json (generated from the dse-mxml AnalyticsFeature enum at
+// release time, and gitignored here), this file is hand-authored and committed:
+// it changes only when the cloud taxonomy does.
+var (
+	knownCloudEvents     map[string]bool
+	cloudEventCategories map[string]string
+)
+
+// readAllowlist loads a name->category map, refusing an empty one. Both
+// allowlists are fail-closed: an unreadable or empty file stops startup rather
+// than silently accepting everything.
+func readAllowlist(path, what string) (map[string]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", path, err)
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	var raw map[string]string
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("parsing %s: %w", path, err)
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	if len(raw) == 0 {
-		return fmt.Errorf("%s contained no features — refusing to start with empty allowlist", path)
+		return nil, fmt.Errorf("%s contained no %s — refusing to start with empty allowlist", path, what)
+	}
+	return raw, nil
+}
+
+func loadFeatures(path string) error {
+	raw, err := readAllowlist(path, "features")
+	if err != nil {
+		return err
 	}
 	kf := make(map[string]bool, len(raw))
 	for name := range raw {
@@ -562,6 +657,21 @@ func loadFeatures(path string) error {
 	knownFeatures = kf
 	featureCategories = raw
 	log.Printf("Loaded %d features from %s", len(raw), path)
+	return nil
+}
+
+func loadCloudEvents(path string) error {
+	raw, err := readAllowlist(path, "cloud events")
+	if err != nil {
+		return err
+	}
+	ke := make(map[string]bool, len(raw))
+	for name := range raw {
+		ke[name] = true
+	}
+	knownCloudEvents = ke
+	cloudEventCategories = raw
+	log.Printf("Loaded %d cloud events from %s", len(raw), path)
 	return nil
 }
 
@@ -796,6 +906,28 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		description TEXT NOT NULL DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
+
+	-- Cloud backend product events (ADR-0036). Separate from analytics_events
+	-- by design: every column here means what it says for a server. No CHECK
+	-- on event_name - the fail-closed allowlist enforces it at ingest, and a
+	-- CHECK would need a table rebuild to extend.
+	-- account_hash is a real column rather than a field inside props: every
+	-- /cloud query touches it, and it ports to Postgres/YugabyteDB without a
+	-- jsonb rewrite.
+	CREATE TABLE IF NOT EXISTS cloud_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		occurred_at DATETIME NOT NULL,
+		received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		instance_id TEXT NOT NULL,
+		cloud_version TEXT,
+		event_name TEXT NOT NULL,
+		account_hash TEXT,
+		props TEXT
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_cloud_events_occurred ON cloud_events(occurred_at);
+	CREATE INDEX IF NOT EXISTS idx_cloud_events_name ON cloud_events(event_name);
+	CREATE INDEX IF NOT EXISTS idx_cloud_events_account ON cloud_events(account_hash);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -924,6 +1056,61 @@ func validateBatch(batch AnalyticsBatch) error {
 	}
 
 	return nil
+}
+
+// Cloud event ingest limits (ADR-0036).
+const (
+	cloudMaxEventsPerBatch = 1000
+	cloudMaxVersionLen     = 64
+	cloudMaxPropsBytes     = 4096
+	cloudClockSkewMillis   = 5 * 60 * 1000
+	cloudMaxAgeMillis      = 7 * 24 * 60 * 60 * 1000
+)
+
+// validateCloudBatch checks only batch-level structure. Event-level problems
+// are handled per event by cloudEventRejectReason so one bad event cannot
+// discard the rest of the batch.
+func validateCloudBatch(batch CloudEventBatch) error {
+	if len(batch.Events) == 0 {
+		return errors.New("no events in batch")
+	}
+	if len(batch.Events) > cloudMaxEventsPerBatch {
+		return fmt.Errorf("batch too large, maximum %d events", cloudMaxEventsPerBatch)
+	}
+	if !validateClientID(batch.InstanceID) {
+		return errors.New("invalid instance ID format")
+	}
+	// Deliberately no semver rule: the collector's semver check is a
+	// desktop-release concern, and a continuously-built server may report
+	// something like "1.4.2-7-gabc1234".
+	if len(batch.CloudVersion) > cloudMaxVersionLen {
+		return fmt.Errorf("cloud version too long, maximum %d characters", cloudMaxVersionLen)
+	}
+	return nil
+}
+
+// cloudEventRejectReason returns "" when the event is storable, otherwise a
+// short reason suitable for logging and counting.
+func cloudEventRejectReason(ev CloudEvent, nowMillis int64, propsLen int) string {
+	if ev.Name == "" {
+		return "missing event name"
+	}
+	if !knownCloudEvents[ev.Name] {
+		return "unknown event name: " + ev.Name
+	}
+	if ev.Timestamp > nowMillis+cloudClockSkewMillis {
+		return "timestamp in the future"
+	}
+	if ev.Timestamp < nowMillis-cloudMaxAgeMillis {
+		return "timestamp older than 7 days"
+	}
+	if ev.AccountHash != "" && !validateClientID(ev.AccountHash) {
+		return "invalid account hash format"
+	}
+	if propsLen > cloudMaxPropsBytes {
+		return "props too large"
+	}
+	return ""
 }
 
 func validateSignature(body []byte, signature, secret string) bool {
@@ -1236,6 +1423,17 @@ func runMonthlyAggregation(db *sql.DB) error {
 	deletedAnalytics, _ := result.RowsAffected()
 	log.Printf("Deleted %d old analytics_events records", deletedAnalytics)
 
+	// Prune old cloud events (ADR-0036: raw retention, no rollup — server
+	// business events are orders of magnitude fewer than desktop feature use,
+	// so aggregation waits until a dashboard question needs it)
+	log.Println("Deleting old cloud_events records...")
+	result, err = tx.Exec("DELETE FROM cloud_events WHERE occurred_at < datetime('now', '-1 year')")
+	if err != nil {
+		return fmt.Errorf("failed to delete old cloud_events: %w", err)
+	}
+	deletedCloudEvents, _ := result.RowsAffected()
+	log.Printf("Deleted %d old cloud_events records", deletedCloudEvents)
+
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
@@ -1319,6 +1517,68 @@ func getClientCountry(r *http.Request) string {
 	return r.Header.Get("CF-IPCountry")
 }
 
+// Dashboard period handling, shared by /platforms, /analytics and /cloud.
+//
+// Each page previously carried its own copy of this switch; a third copy was
+// one page too many. The bucket expression is parameterised by timestamp
+// column because the tables differ (analytics_events.timestamp,
+// cloud_events.occurred_at).
+type periodSpec struct {
+	Period      string
+	Label       string
+	TimeFilter  string // SQL expression for the start of the window
+	Granularity string // human label for the chart bucket size
+	bucketFmt   string // {ts} is replaced with the timestamp column
+}
+
+// BucketExpr returns the SQL expression that buckets the given timestamp
+// column for this period.
+func (p periodSpec) BucketExpr(column string) string {
+	return strings.ReplaceAll(p.bucketFmt, "{ts}", column)
+}
+
+var dashboardPeriods = map[string]periodSpec{
+	"hour": {
+		Period: "hour", Label: "Last Hour",
+		TimeFilter:  "datetime('now', '-1 hour')",
+		Granularity: "10 min",
+		bucketFmt:   "strftime('%Y-%m-%d %H:', {ts}) || printf('%02d', (CAST(strftime('%M', {ts}) AS INTEGER) / 10) * 10)",
+	},
+	"day": {
+		Period: "day", Label: "Last 24 Hours",
+		TimeFilter:  "datetime('now', '-1 day')",
+		Granularity: "hour",
+		bucketFmt:   "strftime('%Y-%m-%d %H:00', {ts})",
+	},
+	"week": {
+		Period: "week", Label: "Last 7 Days",
+		TimeFilter:  "datetime('now', '-7 days')",
+		Granularity: "day",
+		bucketFmt:   "strftime('%Y-%m-%d', {ts})",
+	},
+	"month": {
+		Period: "month", Label: "Last 30 Days",
+		TimeFilter:  "datetime('now', '-30 days')",
+		Granularity: "day",
+		bucketFmt:   "strftime('%Y-%m-%d', {ts})",
+	},
+	"year": {
+		Period: "year", Label: "Last Year",
+		TimeFilter:  "datetime('now', '-365 days')",
+		Granularity: "month",
+		bucketFmt:   "strftime('%Y-%m', {ts})",
+	},
+}
+
+// resolvePeriod maps a ?period= query value to its spec, defaulting to "day".
+func resolvePeriod(period string) (periodSpec, bool) {
+	if period == "" {
+		period = "day"
+	}
+	spec, ok := dashboardPeriods[period]
+	return spec, ok
+}
+
 func main() {
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
@@ -1369,6 +1629,15 @@ func main() {
 	}
 	if err := loadFeatures(featuresPath); err != nil {
 		log.Fatalf("Cannot start without feature allowlist: %v", err)
+	}
+
+	// Load cloud event allowlist (fail-closed, same as features)
+	cloudEventsPath := os.Getenv("CLOUD_EVENTS_FILE")
+	if cloudEventsPath == "" {
+		cloudEventsPath = "/app/cloud-events.json"
+	}
+	if err := loadCloudEvents(cloudEventsPath); err != nil {
+		log.Fatalf("Cannot start without cloud event allowlist: %v", err)
 	}
 
 	// Load release notes
@@ -1608,6 +1877,145 @@ func main() {
 		})
 	})
 
+	// Cloud backend event ingest (ADR-0036)
+	http.HandleFunc("/api/cloud/events", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Method not allowed"})
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Failed to read request body"})
+			return
+		}
+		defer r.Body.Close()
+
+		if analyticsSecret != "" {
+			signature := r.Header.Get("X-Signature")
+			if !validateSignature(body, signature, analyticsSecret) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Invalid signature"})
+				return
+			}
+		}
+
+		var batch CloudEventBatch
+		if err := json.Unmarshal(body, &batch); err != nil {
+			log.Printf("Cloud event JSON parse failure: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error:   "Invalid request format",
+				Details: err.Error(),
+			})
+			return
+		}
+
+		if err := validateCloudBatch(batch); err != nil {
+			log.Printf("Cloud batch rejected from instance %s: %v", batch.InstanceID, err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{
+				Error:   "Invalid request data",
+				Details: err.Error(),
+			})
+			return
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			log.Printf("Error starting transaction: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Internal server error"})
+			return
+		}
+
+		var cloudVersion interface{}
+		if batch.CloudVersion != "" {
+			cloudVersion = batch.CloudVersion
+		}
+
+		now := time.Now().UnixMilli()
+		accepted := 0
+		rejectReasons := make(map[string]int)
+
+		for _, ev := range batch.Events {
+			// Marshal first: the serialised size is what the props cap governs,
+			// and it is what gets stored.
+			var propsJSON interface{}
+			propsLen := 0
+			if len(ev.Props) > 0 {
+				encoded, err := json.Marshal(ev.Props)
+				if err != nil {
+					rejectReasons["unserialisable props"]++
+					continue
+				}
+				propsLen = len(encoded)
+				propsJSON = string(encoded)
+			}
+
+			if reason := cloudEventRejectReason(ev, now, propsLen); reason != "" {
+				rejectReasons[reason]++
+				continue
+			}
+
+			var accountHash interface{}
+			if ev.AccountHash != "" {
+				accountHash = ev.AccountHash
+			}
+
+			_, err := tx.Exec(`INSERT INTO cloud_events
+				(occurred_at, instance_id, cloud_version, event_name, account_hash, props)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				time.Unix(ev.Timestamp/1000, 0).UTC(), batch.InstanceID, cloudVersion,
+				ev.Name, accountHash, propsJSON)
+
+			if err != nil {
+				tx.Rollback()
+				log.Printf("Error inserting cloud event: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrorResponse{Error: "Internal server error"})
+				return
+			}
+			accepted++
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("Error committing transaction: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "Internal server error"})
+			return
+		}
+
+		rejected := len(batch.Events) - accepted
+		if rejected > 0 {
+			// Log the reasons, not just the count: a taxonomy drift should be
+			// diagnosable from the logs rather than only visible as a number.
+			log.Printf("Cloud events from instance %s: %d accepted, %d rejected %v",
+				batch.InstanceID, accepted, rejected, rejectReasons)
+		} else {
+			log.Printf("Received %d cloud events from instance %s (version %s)",
+				accepted, batch.InstanceID, batch.CloudVersion)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(CloudEventBatchResponse{
+			Status:         "accepted",
+			EventsReceived: accepted,
+			EventsRejected: rejected,
+		})
+	})
+
 	// Health check endpoint
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		platformVersions := config.Get()
@@ -1633,41 +2041,12 @@ func main() {
 			return
 		}
 
-		// Get period from query parameter (default: day)
-		period := r.URL.Query().Get("period")
-		if period == "" {
-			period = "day"
-		}
-
-		// Validate period
-		validPeriods := map[string]string{
-			"hour":  "Last Hour",
-			"day":   "Last 24 Hours",
-			"week":  "Last 7 Days",
-			"month": "Last 30 Days",
-			"year":  "Last Year",
-		}
-
-		periodLabel, validPeriod := validPeriods[period]
-		if !validPeriod {
+		spec, ok := resolvePeriod(r.URL.Query().Get("period"))
+		if !ok {
 			http.Error(w, "Invalid period. Use: hour, day, week, month, or year", http.StatusBadRequest)
 			return
 		}
-
-		// Build time filter based on period
-		var timeFilter string
-		switch period {
-		case "hour":
-			timeFilter = "datetime('now', '-1 hour')"
-		case "day":
-			timeFilter = "datetime('now', '-1 day')"
-		case "week":
-			timeFilter = "datetime('now', '-7 days')"
-		case "month":
-			timeFilter = "datetime('now', '-30 days')"
-		case "year":
-			timeFilter = "datetime('now', '-365 days')"
-		}
+		period, periodLabel, timeFilter := spec.Period, spec.Label, spec.TimeFilter
 
 		// Query platform/arch stats
 		platformQuery := fmt.Sprintf(`
@@ -1902,56 +2281,14 @@ func main() {
 			return
 		}
 
-		period := r.URL.Query().Get("period")
-		if period == "" {
-			period = "day"
-		}
-
-		validPeriods := map[string]string{
-			"hour":  "Last Hour",
-			"day":   "Last 24 Hours",
-			"week":  "Last 7 Days",
-			"month": "Last 30 Days",
-			"year":  "Last Year",
-		}
-
-		periodLabel, validPeriod := validPeriods[period]
-		if !validPeriod {
+		spec, ok := resolvePeriod(r.URL.Query().Get("period"))
+		if !ok {
 			http.Error(w, "Invalid period. Use: hour, day, week, month, or year", http.StatusBadRequest)
 			return
 		}
-
-		var timeFilter string
-		switch period {
-		case "hour":
-			timeFilter = "datetime('now', '-1 hour')"
-		case "day":
-			timeFilter = "datetime('now', '-1 day')"
-		case "week":
-			timeFilter = "datetime('now', '-7 days')"
-		case "month":
-			timeFilter = "datetime('now', '-30 days')"
-		case "year":
-			timeFilter = "datetime('now', '-365 days')"
-		}
-
-		// Time bucketing format for Chart.js
-		var timeBucketFormat string
-		var timeGranularity string
-		switch period {
-		case "hour":
-			timeBucketFormat = "strftime('%Y-%m-%d %H:', timestamp) || printf('%02d', (CAST(strftime('%M', timestamp) AS INTEGER) / 10) * 10)"
-			timeGranularity = "10 min"
-		case "day":
-			timeBucketFormat = "strftime('%Y-%m-%d %H:00', timestamp)"
-			timeGranularity = "hour"
-		case "week", "month":
-			timeBucketFormat = "strftime('%Y-%m-%d', timestamp)"
-			timeGranularity = "day"
-		case "year":
-			timeBucketFormat = "strftime('%Y-%m', timestamp)"
-			timeGranularity = "month"
-		}
+		period, periodLabel, timeFilter := spec.Period, spec.Label, spec.TimeFilter
+		timeBucketFormat := spec.BucketExpr("timestamp")
+		timeGranularity := spec.Granularity
 
 		// Query 1: Feature popularity
 		featureQuery := fmt.Sprintf(`
@@ -2210,6 +2547,175 @@ func main() {
 
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("Error executing analytics template: %v", err)
+		}
+	})
+
+	// Cloud backend dashboard endpoint (ADR-0036)
+	http.HandleFunc("/cloud", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		spec, ok := resolvePeriod(r.URL.Query().Get("period"))
+		if !ok {
+			http.Error(w, "Invalid period. Use: hour, day, week, month, or year", http.StatusBadRequest)
+			return
+		}
+		timeFilter := spec.TimeFilter
+
+		data := CloudAnalytics{
+			Period:          spec.Period,
+			PeriodLabel:     spec.Label,
+			TimeGranularity: spec.Granularity,
+			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+		}
+
+		// Summary: totals across the window. Distinct accounts is the cloud
+		// analogue of "unique clients" - instance count is reported separately
+		// because it measures our fleet, not our users.
+		summaryQuery := fmt.Sprintf(`
+			SELECT
+				COUNT(*),
+				COUNT(DISTINCT account_hash),
+				COUNT(DISTINCT instance_id),
+				COALESCE(SUM(CASE WHEN event_name = 'error' THEN 1 ELSE 0 END), 0)
+			FROM cloud_events
+			WHERE occurred_at >= %s
+		`, timeFilter)
+		if err := db.QueryRow(summaryQuery).Scan(&data.TotalEvents, &data.TotalAccounts,
+			&data.TotalInstances, &data.TotalErrors); err != nil {
+			log.Printf("Error querying cloud summary: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// Event popularity
+		popularityQuery := fmt.Sprintf(`
+			SELECT
+				event_name,
+				COUNT(*) as total,
+				COUNT(DISTINCT account_hash) as accounts
+			FROM cloud_events
+			WHERE occurred_at >= %s
+			GROUP BY event_name
+			ORDER BY total DESC
+		`, timeFilter)
+
+		rows, err := db.Query(popularityQuery)
+		if err != nil {
+			log.Printf("Error querying cloud event popularity: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var s CloudEventPopularity
+			if err := rows.Scan(&s.EventName, &s.Total, &s.Accounts); err != nil {
+				log.Printf("Error scanning cloud event row: %v", err)
+				continue
+			}
+			s.Category = cloudEventCategories[s.EventName]
+			if s.Category == "" {
+				s.Category = "Other"
+			}
+			data.EventStats = append(data.EventStats, s)
+		}
+
+		// Events over time
+		bucketQuery := fmt.Sprintf(`
+			SELECT %s as bucket, event_name, COUNT(*) as total
+			FROM cloud_events
+			WHERE occurred_at >= %s
+			GROUP BY bucket, event_name
+			ORDER BY bucket, total DESC
+		`, spec.BucketExpr("occurred_at"), timeFilter)
+
+		bucketRows, err := db.Query(bucketQuery)
+		if err != nil {
+			log.Printf("Error querying cloud time buckets: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer bucketRows.Close()
+
+		var buckets []CloudTimeBucket
+		for bucketRows.Next() {
+			var b CloudTimeBucket
+			if err := bucketRows.Scan(&b.Bucket, &b.EventName, &b.Total); err != nil {
+				log.Printf("Error scanning cloud bucket row: %v", err)
+				continue
+			}
+			buckets = append(buckets, b)
+		}
+		bucketsJSON, _ := json.Marshal(buckets)
+		data.TimeBucketsJSON = string(bucketsJSON)
+
+		// Breakdowns. json_extract is fine here - these are low-cardinality
+		// props enums over a small table. Identity never lives in props, which
+		// is why account_hash is a real column.
+		breakdowns := []struct {
+			title string
+			query string
+		}{
+			{"Share Kind", fmt.Sprintf(`
+				SELECT COALESCE(json_extract(props, '$.kind'), 'unspecified'), COUNT(*)
+				FROM cloud_events
+				WHERE occurred_at >= %s AND event_name = 'share.minted'
+				GROUP BY 1 ORDER BY 2 DESC`, timeFilter)},
+			{"Error Class", fmt.Sprintf(`
+				SELECT COALESCE(json_extract(props, '$.class'), 'unspecified'), COUNT(*)
+				FROM cloud_events
+				WHERE occurred_at >= %s AND event_name = 'error'
+				GROUP BY 1 ORDER BY 2 DESC`, timeFilter)},
+			{"Instance", fmt.Sprintf(`
+				SELECT substr(instance_id, 1, 12), COUNT(*)
+				FROM cloud_events
+				WHERE occurred_at >= %s
+				GROUP BY instance_id ORDER BY 2 DESC`, timeFilter)},
+		}
+
+		for _, b := range breakdowns {
+			brRows, err := db.Query(b.query)
+			if err != nil {
+				log.Printf("Error querying cloud breakdown %q: %v", b.title, err)
+				continue
+			}
+			bd := CloudBreakdown{Title: b.title}
+			for brRows.Next() {
+				var row CloudBreakdownRow
+				if err := brRows.Scan(&row.Label, &row.Total); err != nil {
+					log.Printf("Error scanning cloud breakdown row: %v", err)
+					continue
+				}
+				bd.Rows = append(bd.Rows, row)
+			}
+			brRows.Close()
+			data.Breakdowns = append(data.Breakdowns, bd)
+		}
+
+		funcMap := template.FuncMap{
+			"safeJS": func(s string) template.JS {
+				return template.JS(s)
+			},
+		}
+
+		tmpl, err := template.New("cloud.html").Funcs(funcMap).ParseFS(templateFS, "templates/cloud.html")
+		if err != nil {
+			log.Printf("Error parsing cloud template: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+
+		if err := tmpl.Execute(w, data); err != nil {
+			log.Printf("Error executing cloud template: %v", err)
 		}
 	})
 

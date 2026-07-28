@@ -242,6 +242,21 @@ Headers:
 Body: See API_CONTRACT.md for detailed specification
 ```
 
+**Cloud Events** (for drumscore-cloud backend product events)
+```bash
+POST https://support.drumscore.scot/api/cloud/events
+Headers:
+  Content-Type: application/json
+  X-Instance-ID: instance-id-hash
+  X-Signature: hmac-sha256-signature
+
+Body: See API_CONTRACT.md for detailed specification
+```
+
+Separate from the analytics batch endpoint above, and stored in its own
+`cloud_events` table — a server has honest values for almost none of the
+desktop batch contract. Event names are allow-listed in `cloud-events.json`.
+
 **Health Check** (no rate limiting)
 ```bash
 GET https://support.drumscore.scot/health

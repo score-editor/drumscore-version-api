@@ -81,6 +81,21 @@ Content-Type: application/json
 
 ## Endpoint 2: Analytics Batch
 
+> **Scope note.** This endpoint serves the DSE desktop app only, and stays that
+> way. Cloud-backend analytics get their own table and route
+> (`POST /api/cloud/events` → `cloud_events`) rather than sharing this one —
+> decided in **drumscore-cloud
+> `docs/adr/0036-cloud-events-own-table-and-endpoint.md`** and sequenced in
+> [CLOUD_ANALYTICS_PLAN.md](CLOUD_ANALYTICS_PLAN.md). Neither this contract nor
+> `analytics_events` changes.
+>
+> Two things to know before touching analytics here:
+> **(1)** `features.json` is regenerated from the dse-mxml `AnalyticsFeature`
+> enum at release time and is gitignored — never hand-add names to it;
+> **(2)** the allowlist is fail-closed *per batch*, so one unknown name rejects
+> every event alongside it. (The cloud endpoint deliberately rejects per event
+> instead; changing this one would need a client release.)
+
 ### Request
 ```http
 POST /api/analytics/batch
@@ -173,7 +188,92 @@ Content-Type: application/json
 
 ---
 
-## Endpoint 3: Health Check
+## Endpoint 3: Cloud Events
+
+Product events from the `drumscore-cloud` backend. Deliberately **not** the
+analytics batch endpoint above: that contract describes a desktop installation
+(`os`, `edition`, `sessionStart`, a per-install `clientId`) and a server has
+honest values for almost none of it. The two paths share request signing and
+the 1000-event batch cap; they share no table, query or dashboard.
+
+Decided in drumscore-cloud `docs/adr/0036-cloud-events-own-table-and-endpoint.md`.
+
+### Request
+```http
+POST /api/cloud/events
+Headers:
+  Content-Type: application/json
+  X-Instance-ID: string (recommended)
+    - Used as the nginx rate-limit key; not read by the API
+  X-Signature: string (required when ANALYTICS_SECRET is set)
+    - HMAC-SHA256 of request body, base64 encoded (same scheme as Endpoint 2)
+
+Body:
+{
+  "instanceId": "a3f5b8c2d1e4f6a7b8c9d0e1f2a3b4c5...",
+  "cloudVersion": "1.4.2-7-gabc1234",
+  "events": [
+    {
+      "timestamp": 1753600000000,
+      "name": "share.minted",
+      "accountHash": "c1d2e3f4a5b6...",
+      "props": { "kind": "view-snapshot" }
+    }
+  ]
+}
+```
+
+### Field Specifications
+
+**Top Level:**
+- `instanceId`: string, required, 64 char hex (SHA-256) — pseudonym for the
+  emitting node
+- `cloudVersion`: string, optional, max 64 chars, free-form. **No semver rule**
+  — that is a desktop-release concern; a continuously-built server may report
+  `1.4.2-7-gabc1234`
+- `events`: array, required, 1–1000 events
+
+**Event Object:**
+- `timestamp`: integer, required, Unix ms; must be within the last 7 days and
+  no more than 5 minutes in the future
+- `name`: string, required, must appear in `cloud-events.json`
+- `accountHash`: string, optional, 64 char hex — salted account pseudonym.
+  Omitted for infra-level events. **Never** a raw account id or email
+- `props`: object, optional, max 4096 bytes serialised. Buckets and enums only
+
+### Response
+```http
+202 Accepted
+{
+  "status": "accepted",
+  "eventsReceived": 2,
+  "eventsRejected": 1
+}
+```
+
+### Rejection behaviour
+
+**Unlike Endpoint 2, invalid events are rejected individually.** A batch is
+only refused outright for a structural problem — bad signature (`401`),
+malformed JSON, empty or oversized batch, or a malformed `instanceId` (`400`).
+Anything wrong with a single event (unknown name, timestamp out of window,
+malformed `accountHash`, oversized `props`) drops that event alone; the rest are
+stored and `eventsRejected` reports the count. Rejection reasons are logged
+server-side.
+
+This matters because the allowlist is fail-closed: on the desktop endpoint one
+unrecognised name discards up to 999 good events alongside it. Changing that
+behaviour there would need a client release; here it was free.
+
+### Storage
+
+One row per accepted event in `cloud_events` — `occurred_at`, `received_at`,
+`instance_id`, `cloud_version`, `event_name`, `account_hash`, `props`. Pruned
+after one year. No monthly aggregation.
+
+---
+
+## Endpoint 4: Health Check
 
 ### Request
 ```http
@@ -229,6 +329,8 @@ Use these standardized feature names for consistency:
 
 - **Version Check**: 60 requests/minute per IP, burst 20
 - **Analytics Batch**: 1 request/minute per client ID, burst 5
+- **Cloud Events**: 6 requests/minute per instance ID, burst 10
+  (sized for a 60s emitter cadence with headroom for backoff catch-up)
 - **Health Check**: No limit
 
 ---
@@ -590,7 +692,7 @@ curl -X POST \
 All admin endpoints require: `Authorization: Bearer <ADMIN_SECRET>`
 Admin endpoints are restricted to local network access only via nginx.
 
-### Endpoint 4: Upload UAT Build
+### Endpoint 5: Upload UAT Build
 
 ```http
 POST /api/admin/uat-builds
@@ -617,7 +719,7 @@ Form fields:
 }
 ```
 
-### Endpoint 5: List UAT Builds
+### Endpoint 6: List UAT Builds
 
 ```http
 GET /api/admin/uat-builds
@@ -633,7 +735,7 @@ Authorization: Bearer <ADMIN_SECRET>
 }
 ```
 
-### Endpoint 6: Delete UAT Build
+### Endpoint 7: Delete UAT Build
 
 ```http
 DELETE /api/admin/uat-builds/{id}
@@ -642,7 +744,7 @@ Authorization: Bearer <ADMIN_SECRET>
 
 Returns 409 Conflict if active links reference the build.
 
-### Endpoint 7: Create UAT Download Link
+### Endpoint 8: Create UAT Download Link
 
 ```http
 POST /api/admin/uat-links
@@ -676,7 +778,7 @@ Defaults: `maxUses` = 3, `expiresInHours` = 168 (7 days).
 }
 ```
 
-### Endpoint 8: List UAT Links
+### Endpoint 9: List UAT Links
 
 ```http
 GET /api/admin/uat-links?status=active
@@ -685,7 +787,7 @@ Authorization: Bearer <ADMIN_SECRET>
 
 Query: `?status=active` (default), `expired`, or `all`.
 
-### Endpoint 9: Reset UAT Link Download Count
+### Endpoint 10: Reset UAT Link Download Count
 
 ```http
 PATCH /api/admin/uat-links/{token}
@@ -699,7 +801,7 @@ Resets `use_count` to 0 and clears `last_used_at`. Useful when downloads were co
 { "status": "reset", "token": "<token>" }
 ```
 
-### Endpoint 10: Revoke UAT Link
+### Endpoint 11: Revoke UAT Link
 
 ```http
 DELETE /api/admin/uat-links/{token}
@@ -708,7 +810,7 @@ Authorization: Bearer <ADMIN_SECRET>
 
 Soft-revoke (sets revoked flag, keeps audit trail).
 
-### Endpoint 11: UAT Download (Tester-Facing)
+### Endpoint 12: UAT Download (Tester-Facing)
 
 ```http
 GET /api/uat/download/{token}
@@ -718,7 +820,7 @@ No authentication required — the token IS the authentication.
 - Valid token: serves the file as a download
 - Invalid/expired/revoked/exhausted: returns an HTML error page
 
-### Endpoint 12: UAT Admin Help
+### Endpoint 13: UAT Admin Help
 
 ```http
 GET /api/admin/uat-help
