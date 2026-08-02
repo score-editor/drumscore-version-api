@@ -1537,34 +1537,47 @@ func (p periodSpec) BucketExpr(column string) string {
 	return strings.ReplaceAll(p.bucketFmt, "{ts}", column)
 }
 
+// Each TimeFilter is aligned to the START of a bucket, not offset from the
+// current instant. Offsetting from `now` puts the window boundary in the
+// middle of the oldest bucket, so that bucket reports a fraction of a period
+// and the leading bar reads as a collapse in usage that never happened. With
+// perfectly uniform traffic the old "-7 days" filter produced a first daily
+// bar holding only the hours since the current time of day.
+//
+// The trailing bucket is deliberately left partial — the current week/day/hour
+// is legitimately "so far", and reads that way.
 var dashboardPeriods = map[string]periodSpec{
 	"hour": {
 		Period: "hour", Label: "Last Hour",
-		TimeFilter:  "datetime('now', '-1 hour')",
+		// Truncate to a 10-minute boundary via epoch seconds; SQLite has no
+		// 'start of minute' modifier to lean on.
+		TimeFilter:  "datetime((CAST(strftime('%s','now') AS INTEGER) / 600) * 600 - 3600, 'unixepoch')",
 		Granularity: "10 min",
 		bucketFmt:   "strftime('%Y-%m-%d %H:', {ts}) || printf('%02d', (CAST(strftime('%M', {ts}) AS INTEGER) / 10) * 10)",
 	},
 	"day": {
 		Period: "day", Label: "Last 24 Hours",
-		TimeFilter:  "datetime('now', '-1 day')",
+		TimeFilter:  "strftime('%Y-%m-%d %H:00:00','now','-23 hours')",
 		Granularity: "hour",
 		bucketFmt:   "strftime('%Y-%m-%d %H:00', {ts})",
 	},
 	"week": {
 		Period: "week", Label: "Last 7 Days",
-		TimeFilter:  "datetime('now', '-7 days')",
+		// -6 not -7: seven whole day-buckets counting today.
+		TimeFilter:  "date('now','-6 days')",
 		Granularity: "day",
 		bucketFmt:   "strftime('%Y-%m-%d', {ts})",
 	},
 	"month": {
 		Period: "month", Label: "Last 30 Days",
-		TimeFilter:  "datetime('now', '-30 days')",
+		TimeFilter:  "date('now','-29 days')",
 		Granularity: "day",
 		bucketFmt:   "strftime('%Y-%m-%d', {ts})",
 	},
 	"year": {
 		Period: "year", Label: "Last Year",
-		TimeFilter:  "datetime('now', '-365 days')",
+		// Twelve whole calendar months counting this one.
+		TimeFilter:  "date('now','start of month','-11 months')",
 		Granularity: "month",
 		bucketFmt:   "strftime('%Y-%m', {ts})",
 	},
@@ -2168,7 +2181,17 @@ func main() {
 			versionStats = append(versionStats, stat)
 		}
 
-		// Query weekly platform data for chart (fixed 12-week window)
+		// Query weekly platform data for chart (fixed 12-week window).
+		//
+		// The window starts on a Monday, matching the %W bucket boundary. The
+		// old '-84 days' filter was exactly 12*7, so it always began on the
+		// current weekday mid-week and the oldest bucket held only the tail of
+		// that week — a stub bar that shrank from 7 days' data on a Monday to
+		// 1 day's on a Sunday, regardless of actual usage.
+		//
+		// '-6 days' before 'weekday 1' is load-bearing: SQLite's weekday
+		// modifier stays put when the date already is that weekday, so the
+		// naive form lands a week early every Monday.
 		var weeklyChartJSON string
 		weeklyQuery := `
 			SELECT
@@ -2176,7 +2199,7 @@ func main() {
 				substr(app_version, 1, instr(app_version || '-', '-') - 1) as platform,
 				COUNT(DISTINCT client_id) as unique_clients
 			FROM version_checks
-			WHERE timestamp >= datetime('now', '-84 days')
+			WHERE timestamp >= date('now','-6 days','weekday 1','-77 days')
 				AND client_id IS NOT NULL
 				AND client_id != ''
 				AND app_version LIKE '%-%-_%'
