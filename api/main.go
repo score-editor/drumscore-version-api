@@ -80,6 +80,7 @@ type AnalyticsBatch struct {
 type AnalyticsBatchResponse struct {
 	Status         string `json:"status"`
 	EventsReceived int    `json:"eventsReceived"`
+	EventsRejected int    `json:"eventsRejected"`
 }
 
 type ErrorResponse struct {
@@ -107,10 +108,9 @@ type CloudEventBatch struct {
 	Events       []CloudEvent `json:"events"`
 }
 
-// EventsRejected reports events dropped by the per-event filter. Unlike the
-// desktop endpoint — which fails an entire batch on one unrecognised name —
-// bad events are discarded individually and counted, so a single taxonomy
-// drift cannot cost up to 999 good events.
+// EventsRejected reports events dropped by the per-event filter. Bad events
+// are discarded individually and counted, so a single taxonomy drift cannot
+// cost up to 999 good events. The desktop endpoint now behaves the same way.
 type CloudEventBatchResponse struct {
 	Status         string `json:"status"`
 	EventsReceived int    `json:"eventsReceived"`
@@ -1026,45 +1026,54 @@ func validateBatch(batch AnalyticsBatch) error {
 		return errors.New("invalid OS architecture")
 	}
 
-	// Session start timestamp (allow 5 minutes of clock skew for clients ahead of server)
-	now := time.Now().Unix() * 1000
-	clockSkewTolerance := int64(5 * 60 * 1000)
-	if batch.SessionStart > now+clockSkewTolerance || batch.SessionStart < (now-7*24*60*60*1000) {
+	// Session start timestamp. UnixMilli, not Unix()*1000: truncating to the
+	// second puts the server up to 999ms in the past, which read as the client
+	// being in the future.
+	now := time.Now().UnixMilli()
+	if batch.SessionStart > now+ingestClockSkewMillis || batch.SessionStart < (now-ingestMaxAgeMillis) {
 		return fmt.Errorf("invalid session start timestamp: got %d, server now %d, diff %dms", batch.SessionStart, now, batch.SessionStart-now)
-	}
-
-	// Validate each event
-	for i, event := range batch.Events {
-		if !validEventTypes[event.EventType] {
-			return errors.New("invalid event type at index " + string(rune(i)))
-		}
-
-		// Feature name required for feature_used events
-		if event.EventType == "feature_used" {
-			if event.FeatureName == "" {
-				return errors.New("feature name required for feature_used event")
-			}
-			if !knownFeatures[event.FeatureName] {
-				return errors.New("unknown feature name: " + event.FeatureName)
-			}
-		}
-
-		// Timestamp validation
-		if event.Timestamp > now || event.Timestamp < (now-7*24*60*60*1000) {
-			return fmt.Errorf("invalid event timestamp at index %d: got %d, server now %d, diff %dms", i, event.Timestamp, now, event.Timestamp-now)
-		}
 	}
 
 	return nil
 }
+
+// analyticsEventRejectReason returns "" when the event is storable, otherwise
+// a short reason suitable for logging and counting. Event-level problems are
+// handled per event so one bad event cannot discard the rest of the batch.
+func analyticsEventRejectReason(event AnalyticsEvent, nowMillis int64) string {
+	if !validEventTypes[event.EventType] {
+		return "invalid event type: " + event.EventType
+	}
+	if event.EventType == "feature_used" {
+		if event.FeatureName == "" {
+			return "missing feature name"
+		}
+		if !knownFeatures[event.FeatureName] {
+			return "unknown feature name: " + event.FeatureName
+		}
+	}
+	if event.Timestamp > nowMillis+ingestClockSkewMillis {
+		return "timestamp in the future"
+	}
+	if event.Timestamp < nowMillis-ingestMaxAgeMillis {
+		return "timestamp older than 7 days"
+	}
+	return ""
+}
+
+// Timestamp acceptance window, shared by both ingest paths. Consumer clocks
+// drift, so a client a few minutes ahead of the server is reporting in good
+// faith and its data is worth keeping.
+const (
+	ingestClockSkewMillis = 5 * 60 * 1000
+	ingestMaxAgeMillis    = 7 * 24 * 60 * 60 * 1000
+)
 
 // Cloud event ingest limits (ADR-0036).
 const (
 	cloudMaxEventsPerBatch = 1000
 	cloudMaxVersionLen     = 64
 	cloudMaxPropsBytes     = 4096
-	cloudClockSkewMillis   = 5 * 60 * 1000
-	cloudMaxAgeMillis      = 7 * 24 * 60 * 60 * 1000
 )
 
 // validateCloudBatch checks only batch-level structure. Event-level problems
@@ -1098,10 +1107,10 @@ func cloudEventRejectReason(ev CloudEvent, nowMillis int64, propsLen int) string
 	if !knownCloudEvents[ev.Name] {
 		return "unknown event name: " + ev.Name
 	}
-	if ev.Timestamp > nowMillis+cloudClockSkewMillis {
+	if ev.Timestamp > nowMillis+ingestClockSkewMillis {
 		return "timestamp in the future"
 	}
-	if ev.Timestamp < nowMillis-cloudMaxAgeMillis {
+	if ev.Timestamp < nowMillis-ingestMaxAgeMillis {
 		return "timestamp older than 7 days"
 	}
 	if ev.AccountHash != "" && !validateClientID(ev.AccountHash) {
@@ -1847,8 +1856,16 @@ func main() {
 		}
 
 		sessionStart := time.Unix(batch.SessionStart/1000, 0)
+		now := time.Now().UnixMilli()
+		accepted := 0
+		rejectReasons := make(map[string]int)
 
 		for _, event := range batch.Events {
+			if reason := analyticsEventRejectReason(event, now); reason != "" {
+				rejectReasons[reason]++
+				continue
+			}
+
 			eventTime := time.Unix(event.Timestamp/1000, 0)
 			metadataJSON, _ := json.Marshal(event.Metadata)
 
@@ -1868,6 +1885,7 @@ func main() {
 				json.NewEncoder(w).Encode(ErrorResponse{Error: "Internal server error"})
 				return
 			}
+			accepted++
 		}
 
 		if err := tx.Commit(); err != nil {
@@ -1878,15 +1896,25 @@ func main() {
 			return
 		}
 
-		log.Printf("Received %d events from client %s (version %s, edition %s, %s %s)",
-			len(batch.Events), batch.ClientID, batch.AppVersion, edition,
-			batch.OS.Family, batch.OS.Version)
+		rejected := len(batch.Events) - accepted
+		if rejected > 0 {
+			// Log the reasons, not just the count: a taxonomy drift or a fleet of
+			// skewed clocks should be diagnosable from the logs.
+			log.Printf("Events from client %s (version %s, edition %s, %s %s): %d accepted, %d rejected %v",
+				batch.ClientID, batch.AppVersion, edition, batch.OS.Family,
+				batch.OS.Version, accepted, rejected, rejectReasons)
+		} else {
+			log.Printf("Received %d events from client %s (version %s, edition %s, %s %s)",
+				accepted, batch.ClientID, batch.AppVersion, edition,
+				batch.OS.Family, batch.OS.Version)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(AnalyticsBatchResponse{
 			Status:         "accepted",
-			EventsReceived: len(batch.Events),
+			EventsReceived: accepted,
+			EventsRejected: rejected,
 		})
 	})
 
