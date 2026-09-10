@@ -92,9 +92,9 @@ Content-Type: application/json
 > Two things to know before touching analytics here:
 > **(1)** `features.json` is regenerated from the dse-mxml `AnalyticsFeature`
 > enum at release time and is gitignored — never hand-add names to it;
-> **(2)** the allowlist is fail-closed *per batch*, so one unknown name rejects
-> every event alongside it. (The cloud endpoint deliberately rejects per event
-> instead; changing this one would need a client release.)
+> **(2)** the allowlist is fail-closed, but *per event* — an unknown name drops
+> that event alone and the rest of the batch is stored. It used to reject the
+> whole batch; see **Rejection behaviour** below.
 
 ### Request
 ```http
@@ -158,9 +158,29 @@ Content-Type: application/json
 
 {
   "status": "accepted",
-  "eventsReceived": 2
+  "eventsReceived": 2,
+  "eventsRejected": 0
 }
 ```
+
+`eventsReceived` counts events actually stored, not events submitted.
+
+### Rejection behaviour
+
+Invalid events are rejected **individually**. A batch is refused outright only
+for a structural problem — bad signature (`401`), malformed JSON, empty or
+oversized batch, bad `clientId`, `appVersion`, `os`, or a `sessionStart`
+outside the acceptance window (`400`). Anything wrong with a single event
+(unknown feature name, invalid event type, timestamp out of window) drops that
+event alone; the rest are stored and `eventsRejected` reports the count.
+Rejection reasons are logged server-side with per-reason counts.
+
+**Timestamp acceptance window:** an event or `sessionStart` is accepted if it
+is no more than **5 minutes ahead** of server time and no more than **7 days**
+behind it. The forward tolerance exists because consumer clocks drift; a client
+a few minutes fast is reporting in good faith. Timestamps are epoch
+milliseconds UTC, so a client's timezone is irrelevant — only clock accuracy
+matters.
 
 ### Error Responses
 ```http
@@ -253,7 +273,7 @@ Body:
 
 ### Rejection behaviour
 
-**Unlike Endpoint 2, invalid events are rejected individually.** A batch is
+**As on Endpoint 2, invalid events are rejected individually.** A batch is
 only refused outright for a structural problem — bad signature (`401`),
 malformed JSON, empty or oversized batch, or a malformed `instanceId` (`400`).
 Anything wrong with a single event (unknown name, timestamp out of window,
@@ -261,9 +281,9 @@ malformed `accountHash`, oversized `props`) drops that event alone; the rest are
 stored and `eventsRejected` reports the count. Rejection reasons are logged
 server-side.
 
-This matters because the allowlist is fail-closed: on the desktop endpoint one
-unrecognised name discards up to 999 good events alongside it. Changing that
-behaviour there would need a client release; here it was free.
+This matters because the allowlist is fail-closed: one unrecognised name would
+otherwise discard up to 999 good events alongside it. Endpoint 2 originally did
+exactly that and has since been brought into line.
 
 ### Storage
 
