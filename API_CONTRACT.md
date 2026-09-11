@@ -175,12 +175,18 @@ outside the acceptance window (`400`). Anything wrong with a single event
 event alone; the rest are stored and `eventsRejected` reports the count.
 Rejection reasons are logged server-side with per-reason counts.
 
-**Timestamp acceptance window:** an event or `sessionStart` is accepted if it
-is no more than **5 minutes ahead** of server time and no more than **7 days**
-behind it. The forward tolerance exists because consumer clocks drift; a client
-a few minutes fast is reporting in good faith. Timestamps are epoch
-milliseconds UTC, so a client's timezone is irrelevant — only clock accuracy
-matters.
+**Timestamp acceptance window:** an **event** is accepted if it is no more than
+**5 minutes ahead** of server time and no more than **7 days** behind it. The
+forward tolerance exists because consumer clocks drift; a client a few minutes
+fast is reporting in good faith. Timestamps are epoch milliseconds UTC, so a
+client's timezone is irrelevant — only clock accuracy matters.
+
+`sessionStart` is checked **only** against the forward bound, and has no age
+limit. It is fixed for the life of the process, so an install left open for
+weeks legitimately reports a very old one; that says nothing about whether the
+events in the batch are good, and each event is validated on its own timestamp
+anyway. An age bound here previously rejected batches of current events from
+the longest-running installs.
 
 ### Error Responses
 ```http
