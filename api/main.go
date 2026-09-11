@@ -1029,8 +1029,15 @@ func validateBatch(batch AnalyticsBatch) error {
 	// Session start timestamp. UnixMilli, not Unix()*1000: truncating to the
 	// second puts the server up to 999ms in the past, which read as the client
 	// being in the future.
+	//
+	// Only the future bound is checked. sessionStart is fixed for the life of
+	// the process, so a user who leaves the editor open for a week or a month
+	// legitimately reports a very old one -- that says nothing about whether the
+	// events are good, and each event carries its own validated timestamp. An
+	// age bound here rejected batches of current events from the longest-running
+	// installs, which are disproportionately the heaviest and paid ones.
 	now := time.Now().UnixMilli()
-	if batch.SessionStart > now+ingestClockSkewMillis || batch.SessionStart < (now-ingestMaxAgeMillis) {
+	if batch.SessionStart > now+ingestClockSkewMillis {
 		return fmt.Errorf("invalid session start timestamp: got %d, server now %d, diff %dms", batch.SessionStart, now, batch.SessionStart-now)
 	}
 
