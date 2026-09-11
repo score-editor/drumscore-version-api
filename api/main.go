@@ -1855,7 +1855,11 @@ func main() {
 			return
 		}
 
-		sessionStart := time.Unix(batch.SessionStart/1000, 0)
+		// .UTC() is load-bearing: the driver formats a time.Time in its own
+		// location, so without it the stored offset follows the container's TZ.
+		// Range filters compare these as strings against a bare datetime('now'),
+		// which a non-UTC offset silently shifts.
+		sessionStart := time.Unix(batch.SessionStart/1000, 0).UTC()
 		now := time.Now().UnixMilli()
 		accepted := 0
 		rejectReasons := make(map[string]int)
@@ -1866,7 +1870,7 @@ func main() {
 				continue
 			}
 
-			eventTime := time.Unix(event.Timestamp/1000, 0)
+			eventTime := time.Unix(event.Timestamp/1000, 0).UTC()
 			metadataJSON, _ := json.Marshal(event.Metadata)
 
 			_, err := tx.Exec(`INSERT INTO analytics_events
