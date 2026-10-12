@@ -104,12 +104,31 @@ Examples:
 EOF
 }
 
+# Check a version/platform/arch triple against the values the server accepts, so a typo is named
+# here rather than coming back from link as "No build found".
+validate_target() {
+    local version="$1" platform="$2" arch="$3"
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Error: invalid version '$version' — must be X.Y.Z, e.g. 3.6.7"
+        exit 1
+    fi
+    case "$platform" in
+        macos|windows|linux) ;;
+        *) echo "Error: invalid platform '$platform' — must be: macos, windows or linux"; exit 1 ;;
+    esac
+    case "$arch" in
+        x86_64|aarch64) ;;
+        *) echo "Error: invalid arch '$arch' — must be: x86_64 or aarch64"; exit 1 ;;
+    esac
+}
+
 upload_build() {
     local file="$1" version="$2" platform="$3" arch="$4"
     if [ -z "$file" ] || [ -z "$version" ] || [ -z "$platform" ] || [ -z "$arch" ]; then
         echo "Usage: uat-admin.sh upload <file> <version> <platform> <arch>"
         exit 1
     fi
+    validate_target "$version" "$platform" "$arch"
     if [ ! -f "$file" ]; then
         echo "Error: File not found: $file"
         exit 1
@@ -146,6 +165,7 @@ create_link() {
         echo "Usage: uat-admin.sh link <name> <version> <platform> <arch>"
         exit 1
     fi
+    validate_target "$version" "$platform" "$arch"
 
     api_call POST /api/admin/uat-links \
         -H "Content-Type: application/json" \
