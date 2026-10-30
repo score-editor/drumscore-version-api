@@ -255,6 +255,7 @@ type UATBuild struct {
 	Version   string `json:"version"`
 	Platform  string `json:"platform"`
 	Arch      string `json:"arch"`
+	Format    string `json:"format"`
 	Filename  string `json:"filename"`
 	FileSize  int64  `json:"fileSize"`
 	CreatedAt string `json:"createdAt"`
@@ -268,6 +269,7 @@ type UATLink struct {
 	Version    string `json:"version,omitempty"`
 	Platform   string `json:"platform,omitempty"`
 	Arch       string `json:"arch,omitempty"`
+	Format     string `json:"format,omitempty"`
 	MaxUses    int    `json:"maxUses"`
 	UseCount   int    `json:"useCount"`
 	ExpiresAt  string `json:"expiresAt"`
@@ -281,6 +283,7 @@ type CreateUATLinkRequest struct {
 	Version        string `json:"version"`
 	Platform       string `json:"platform"`
 	Arch           string `json:"arch"`
+	Format         string `json:"format"`
 	SharedFileID   int64  `json:"sharedFileId"`
 	MaxUses        int    `json:"maxUses"`
 	ExpiresInHours int    `json:"expiresInHours"`
@@ -302,6 +305,7 @@ type CreateUATLinkResponse struct {
 	Version      string `json:"version"`
 	Platform     string `json:"platform"`
 	Arch         string `json:"arch"`
+	Format       string `json:"format"`
 	MaxUses      int    `json:"maxUses"`
 	ExpiresAt    string `json:"expiresAt"`
 }
@@ -965,6 +969,17 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		}
 	}
 
+	// Migration: add package_format to uat_builds, so one version/platform/arch can carry several
+	// packages (e.g. a Linux .deb and an Arch .pkg.tar.zst). Backfill existing rows from their filenames.
+	if _, err := db.Exec("ALTER TABLE uat_builds ADD COLUMN package_format TEXT"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return nil, fmt.Errorf("migration failed: %w", err)
+		}
+	}
+	if err := backfillUATPackageFormats(db); err != nil {
+		return nil, fmt.Errorf("package_format backfill failed: %w", err)
+	}
+
 	// Add indexes on edition for raw tables
 	editionIndexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_version_checks_edition ON version_checks(edition)",
@@ -991,6 +1006,44 @@ func normalizeEdition(edition string) string {
 		return edition
 	}
 	return "studio"
+}
+
+// Multi-part extensions recognised as a single package format, longest first.
+var compoundPackageExts = []string{".pkg.tar.zst", ".pkg.tar.xz", ".tar.zst", ".tar.gz", ".tar.xz"}
+
+// packageFormat derives a UAT build's package format from its filename: "deb", "pkg.tar.zst", "dmg", ...
+func packageFormat(filename string) string {
+	lower := strings.ToLower(filename)
+	for _, ext := range compoundPackageExts {
+		if strings.HasSuffix(lower, ext) {
+			return ext[1:]
+		}
+	}
+	return strings.TrimPrefix(filepath.Ext(lower), ".")
+}
+
+func backfillUATPackageFormats(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, COALESCE(original_name, filename) FROM uat_builds WHERE package_format IS NULL`)
+	if err != nil {
+		return err
+	}
+	formats := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			rows.Close()
+			return err
+		}
+		formats[id] = packageFormat(name)
+	}
+	rows.Close()
+	for id, format := range formats {
+		if _, err := db.Exec(`UPDATE uat_builds SET package_format = ? WHERE id = ?`, format, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateVersion(version string) bool {
@@ -2927,6 +2980,7 @@ func main() {
 			// Store file as version-platform-arch-originalname on disk to avoid clashes;
 			// keep the original filename so downloads serve it under its uploaded name.
 			originalName := filepath.Base(header.Filename)
+			format := packageFormat(originalName)
 			safeFilename := fmt.Sprintf("%s-%s-%s-%s", version, platform, arch, originalName)
 			destPath := filepath.Join(uatBuildsDir, safeFilename)
 
@@ -2950,8 +3004,8 @@ func main() {
 				return
 			}
 
-			result, err := db.Exec(`INSERT INTO uat_builds (version, platform, arch, filename, original_name, file_size) VALUES (?, ?, ?, ?, ?, ?)`,
-				version, platform, arch, safeFilename, originalName, written)
+			result, err := db.Exec(`INSERT INTO uat_builds (version, platform, arch, package_format, filename, original_name, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				version, platform, arch, format, safeFilename, originalName, written)
 			if err != nil {
 				os.Remove(destPath)
 				log.Printf("Error inserting UAT build: %v", err)
@@ -2962,7 +3016,7 @@ func main() {
 			}
 
 			buildID, _ := result.LastInsertId()
-			log.Printf("UAT build uploaded: %s (%s/%s) - %d bytes", version, platform, arch, written)
+			log.Printf("UAT build uploaded: %s (%s/%s, %s) - %d bytes", version, platform, arch, format, written)
 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -2971,12 +3025,13 @@ func main() {
 				Version:  version,
 				Platform: platform,
 				Arch:     arch,
+				Format:   format,
 				Filename: safeFilename,
 				FileSize: written,
 			})
 
 		case http.MethodGet:
-			rows, err := db.Query(`SELECT id, version, platform, arch, filename, file_size, created_at FROM uat_builds ORDER BY created_at DESC`)
+			rows, err := db.Query(`SELECT id, version, platform, arch, COALESCE(package_format, ''), filename, file_size, created_at FROM uat_builds ORDER BY created_at DESC`)
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
@@ -2988,7 +3043,7 @@ func main() {
 			builds := []UATBuild{}
 			for rows.Next() {
 				var b UATBuild
-				if err := rows.Scan(&b.ID, &b.Version, &b.Platform, &b.Arch, &b.Filename, &b.FileSize, &b.CreatedAt); err != nil {
+				if err := rows.Scan(&b.ID, &b.Version, &b.Platform, &b.Arch, &b.Format, &b.Filename, &b.FileSize, &b.CreatedAt); err != nil {
 					continue
 				}
 				builds = append(builds, b)
@@ -3097,13 +3152,37 @@ func main() {
 					return
 				}
 			} else {
-				// Find the build
-				err := db.QueryRow(`SELECT id FROM uat_builds WHERE version = ? AND platform = ? AND arch = ? ORDER BY created_at DESC LIMIT 1`,
-					req.Version, req.Platform, req.Arch).Scan(&buildID)
+				// Find the build. Without a format the triple must be unambiguous, so a tester
+				// can't silently get whichever Linux package happened to be uploaded last.
+				target := fmt.Sprintf("%s/%s/%s", req.Version, req.Platform, req.Arch)
+				if req.Format != "" {
+					target += " (" + req.Format + ")"
+				} else {
+					var formats []string
+					fRows, err := db.Query(`SELECT DISTINCT COALESCE(package_format, '') FROM uat_builds WHERE version = ? AND platform = ? AND arch = ? ORDER BY 1`,
+						req.Version, req.Platform, req.Arch)
+					if err == nil {
+						for fRows.Next() {
+							var f string
+							if fRows.Scan(&f) == nil {
+								formats = append(formats, f)
+							}
+						}
+						fRows.Close()
+					}
+					if len(formats) > 1 {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusConflict)
+						json.NewEncoder(w).Encode(ErrorResponse{Error: "Multiple package formats", Details: fmt.Sprintf("%s has %s — specify format", target, strings.Join(formats, ", "))})
+						return
+					}
+				}
+				err := db.QueryRow(`SELECT id, COALESCE(package_format, '') FROM uat_builds WHERE version = ? AND platform = ? AND arch = ? AND (? = '' OR package_format = ?) ORDER BY created_at DESC LIMIT 1`,
+					req.Version, req.Platform, req.Arch, req.Format, req.Format).Scan(&buildID, &req.Format)
 				if err != nil {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusNotFound)
-					json.NewEncoder(w).Encode(ErrorResponse{Error: "No build found", Details: fmt.Sprintf("No build for %s/%s/%s", req.Version, req.Platform, req.Arch)})
+					json.NewEncoder(w).Encode(ErrorResponse{Error: "No build found", Details: "No build for " + target})
 					return
 				}
 			}
@@ -3150,7 +3229,7 @@ func main() {
 			}
 			downloadLink := fmt.Sprintf("%s/api/uat/download/%s", publicHost, token)
 
-			log.Printf("UAT link created for %s: %s/%s/%s (expires %s)", req.IssuedTo, req.Version, req.Platform, req.Arch, expiresAt.Format(time.RFC3339))
+			log.Printf("UAT link created for %s: %s/%s/%s %s (expires %s)", req.IssuedTo, req.Version, req.Platform, req.Arch, req.Format, expiresAt.Format(time.RFC3339))
 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -3161,6 +3240,7 @@ func main() {
 				Version:      req.Version,
 				Platform:     req.Platform,
 				Arch:         req.Arch,
+				Format:       req.Format,
 				MaxUses:      req.MaxUses,
 				ExpiresAt:    expiresAt.Format(time.RFC3339),
 			})
@@ -3174,21 +3254,21 @@ func main() {
 			var query string
 			switch status {
 			case "active":
-				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), COALESCE(b.package_format, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
 					FROM uat_links l
 					LEFT JOIN uat_builds b ON l.build_id = b.id AND l.shared_file_id IS NULL
 					LEFT JOIN shared_files sf ON l.shared_file_id = sf.id
 					WHERE l.revoked = 0 AND l.expires_at > datetime('now') AND l.use_count < l.max_uses
 					ORDER BY l.created_at DESC`
 			case "expired":
-				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), COALESCE(b.package_format, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
 					FROM uat_links l
 					LEFT JOIN uat_builds b ON l.build_id = b.id AND l.shared_file_id IS NULL
 					LEFT JOIN shared_files sf ON l.shared_file_id = sf.id
 					WHERE l.revoked = 1 OR l.expires_at <= datetime('now') OR l.use_count >= l.max_uses
 					ORDER BY l.created_at DESC`
 			case "all":
-				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
+				query = `SELECT l.id, l.token, l.issued_to, l.build_id, COALESCE(b.version, sf.description, ''), COALESCE(b.platform, ''), COALESCE(b.arch, ''), COALESCE(b.package_format, ''), l.max_uses, l.use_count, l.expires_at, l.revoked, l.created_at, COALESCE(l.last_used_at, '')
 					FROM uat_links l
 					LEFT JOIN uat_builds b ON l.build_id = b.id AND l.shared_file_id IS NULL
 					LEFT JOIN shared_files sf ON l.shared_file_id = sf.id
@@ -3213,7 +3293,7 @@ func main() {
 			for rows.Next() {
 				var l UATLink
 				var revokedInt int
-				if err := rows.Scan(&l.ID, &l.Token, &l.IssuedTo, &l.BuildID, &l.Version, &l.Platform, &l.Arch, &l.MaxUses, &l.UseCount, &l.ExpiresAt, &revokedInt, &l.CreatedAt, &l.LastUsedAt); err != nil {
+				if err := rows.Scan(&l.ID, &l.Token, &l.IssuedTo, &l.BuildID, &l.Version, &l.Platform, &l.Arch, &l.Format, &l.MaxUses, &l.UseCount, &l.ExpiresAt, &revokedInt, &l.CreatedAt, &l.LastUsedAt); err != nil {
 					continue
 				}
 				l.Revoked = revokedInt != 0
@@ -3581,6 +3661,8 @@ curl -sk -X POST %s/api/admin/uat-links \
   -H "Authorization: Bearer $ADMIN_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"issuedTo":"<name-or-email>","version":"<version>","platform":"<platform>","arch":"<arch>"}'
+  Add "format":"<deb|pkg.tar.zst|...>" when a version/platform/arch has more than one
+  package (format is taken from the uploaded file's extension)
 
 LIST BUILDS
 -----------
