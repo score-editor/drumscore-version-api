@@ -45,8 +45,11 @@ api_call() {
                 echo "Error: HTTP $status from $HOST$path — check ADMIN_SECRET" >&2 ;;
             404)
                 echo "Error: HTTP 404 from $HOST$path" >&2
-                echo "  Admin endpoints are local-network only. Access via WireGuard" >&2
-                echo "  (default UAT_HOST=https://10.77.77.1) — public/Cloudflare returns 404." >&2 ;;
+                # A JSON 404 is the API saying "not found" (e.g. no such build); anything else is nginx/Cloudflare
+                if ! echo "$API_BODY" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then
+                    echo "  Admin endpoints are local-network only. Access via WireGuard" >&2
+                    echo "  (default UAT_HOST=https://10.77.77.1) — public/Cloudflare returns 404." >&2
+                fi ;;
             *)
                 echo "Error: HTTP $status from $HOST$path" >&2 ;;
         esac
@@ -77,7 +80,8 @@ Usage: uat-admin.sh <command> [options]
 Commands:
   help                          Show this help
   upload <file> <version> <platform> <arch>   Upload a build
-  link <name> <version> <platform> <arch>     Create a download link
+  link <name> <version> <platform> <arch> [format]
+                                              Create a download link
   builds                        List all builds
   links [active|expired|all]    List links (default: active)
   reset <token>                 Reset download count for a link
@@ -92,10 +96,14 @@ Commands:
 
 Platforms: macos, windows, linux
 Architectures: x86_64, aarch64
+Formats: taken from the uploaded file's extension (deb, pkg.tar.zst, dmg, ...).
+  Only needed on link when a version/platform/arch has more than one package.
 
 Examples:
   uat-admin.sh upload DrumScoreEditor_macOS_arm64_3.6.0.dmg 3.6.0 macos aarch64
   uat-admin.sh link "John Smith" 3.6.0 macos aarch64
+  uat-admin.sh upload drumscoreeditor-3.6.0-1-x86_64.pkg.tar.zst 3.6.0 linux x86_64
+  uat-admin.sh link "Jane Doe" 3.6.0 linux x86_64 pkg.tar.zst
   uat-admin.sh reset 4410ac59...    (reset download count)
   uat-admin.sh links
   uat-admin.sh status
@@ -155,21 +163,22 @@ print(f\"  Build uploaded successfully\")
 print(f\"  ID:       {b['id']}\")
 print(f\"  Version:  {b['version']}\")
 print(f\"  Platform: {b['platform']}/{b['arch']}\")
+print(f\"  Format:   {b.get('format', '')}\")
 print(f\"  Size:     {b['fileSize'] / 1048576:.1f} MB\")
 "
 }
 
 create_link() {
-    local name="$1" version="$2" platform="$3" arch="$4"
+    local name="$1" version="$2" platform="$3" arch="$4" format="$5"
     if [ -z "$name" ] || [ -z "$version" ] || [ -z "$platform" ] || [ -z "$arch" ]; then
-        echo "Usage: uat-admin.sh link <name> <version> <platform> <arch>"
+        echo "Usage: uat-admin.sh link <name> <version> <platform> <arch> [format]"
         exit 1
     fi
     validate_target "$version" "$platform" "$arch"
 
     api_call POST /api/admin/uat-links \
         -H "Content-Type: application/json" \
-        -d "{\"issuedTo\":\"$name\",\"version\":\"$version\",\"platform\":\"$platform\",\"arch\":\"$arch\"}" || return 1
+        -d "{\"issuedTo\":\"$name\",\"version\":\"$version\",\"platform\":\"$platform\",\"arch\":\"$arch\",\"format\":\"$format\"}" || return 1
 
     echo "$API_BODY" | python3 -c "
 import sys, json
@@ -178,7 +187,7 @@ if 'token' not in l:
     print(f'Error: {l}')
     sys.exit(1)
 print(f\"  Link created for {l['issuedTo']}\")
-print(f\"  Version:  {l['version']} ({l['platform']}/{l['arch']})\")
+print(f\"  Version:  {l['version']} ({l['platform']}/{l['arch']}, {l.get('format', '')})\")
 print(f\"  Uses:     {l['maxUses']}\")
 print(f\"  Expires:  {l['expiresAt']}\")
 print()
@@ -199,12 +208,12 @@ if not builds:
     sys.exit(0)
 print(f'  {len(builds)} build(s)')
 print()
-print(f'  {\"ID\":<6} {\"Version\":<16} {\"Platform\":<10} {\"Arch\":<10} {\"Size\":<10} {\"Uploaded\"}')
-print(f'  {\"-\"*6} {\"-\"*16} {\"-\"*10} {\"-\"*10} {\"-\"*10} {\"-\"*19}')
+print(f'  {\"ID\":<6} {\"Version\":<16} {\"Platform\":<10} {\"Arch\":<10} {\"Format\":<12} {\"Size\":<10} {\"Uploaded\"}')
+print(f'  {\"-\"*6} {\"-\"*16} {\"-\"*10} {\"-\"*10} {\"-\"*12} {\"-\"*10} {\"-\"*19}')
 for b in builds:
     size = f\"{b['fileSize'] / 1048576:.1f} MB\"
     created = b.get('createdAt', '')[:19]
-    print(f\"  {b['id']:<6} {b['version']:<16} {b['platform']:<10} {b['arch']:<10} {size:<10} {created}\")
+    print(f\"  {b['id']:<6} {b['version']:<16} {b['platform']:<10} {b['arch']:<10} {b.get('format', ''):<12} {size:<10} {created}\")
 "
 }
 
@@ -226,7 +235,8 @@ for l in links:
     revoked = ' [REVOKED]' if l.get('revoked') else ''
     expires = l.get('expiresAt', '')[:19]
     print(f\"  {l['issuedTo']}{revoked}\")
-    print(f\"    Version:  {l.get('version','?')}/{l.get('platform','?')}/{l.get('arch','?')}\")
+    fmt = f\" ({l['format']})\" if l.get('format') else ''
+    print(f\"    Version:  {l.get('version','?')}/{l.get('platform','?')}/{l.get('arch','?')}{fmt}\")
     print(f\"    Uses:     {l['useCount']}/{l['maxUses']}\")
     print(f\"    Expires:  {expires}\")
     print(f\"    Token:    {l['token']}\")
@@ -408,7 +418,7 @@ show_status() {
 case "${1:-help}" in
     help|-h|--help)   usage ;;
     upload)           upload_build "$2" "$3" "$4" "$5" ;;
-    link)             create_link "$2" "$3" "$4" "$5" ;;
+    link)             create_link "$2" "$3" "$4" "$5" "$6" ;;
     builds)           list_builds ;;
     links)            list_links "$2" ;;
     reset)            reset_link "$2" ;;

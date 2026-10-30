@@ -279,6 +279,9 @@ Share pre-release builds with UAT testers via unique, controlled download links.
 
 # Create a download link for a tester
 ./uat-admin.sh link "John Smith" 3.6.0 macos aarch64
+
+# Linux with both a .deb and an Arch package for the same version: name the format
+./uat-admin.sh link "Jane Doe" 3.6.0 linux x86_64 pkg.tar.zst
 # → Returns a link to send to the tester
 
 # View all builds and active links
