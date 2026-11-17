@@ -1079,22 +1079,41 @@ func validateBatch(batch AnalyticsBatch) error {
 		return errors.New("invalid OS architecture")
 	}
 
-	// Session start timestamp. UnixMilli, not Unix()*1000: truncating to the
-	// second puts the server up to 999ms in the past, which read as the client
-	// being in the future.
+	// sessionStart is deliberately NOT validated, in either direction.
 	//
-	// Only the future bound is checked. sessionStart is fixed for the life of
-	// the process, so a user who leaves the editor open for a week or a month
-	// legitimately reports a very old one -- that says nothing about whether the
-	// events are good, and each event carries its own validated timestamp. An
-	// age bound here rejected batches of current events from the longest-running
-	// installs, which are disproportionately the heaviest and paid ones.
-	now := time.Now().UnixMilli()
-	if batch.SessionStart > now+ingestClockSkewMillis {
-		return fmt.Errorf("invalid session start timestamp: got %d, server now %d, diff %dms", batch.SessionStart, now, batch.SessionStart-now)
-	}
+	// It is an opaque correlation key, not a measurement: the only thing any
+	// query does with it is join a session_end event to its session_start
+	// (`s.session_start = e.session_start`). Every duration is computed from the
+	// event timestamps instead. So a skewed or silly value costs us a slightly
+	// odd key and nothing else, while each event in the batch is still judged on
+	// its own timestamp by analyticsEventRejectReason.
+	//
+	// It used to be checked against the future bound, and that turned one wrong
+	// clock into total data loss: the client treats a 400 as permanent and drops
+	// the batch rather than retrying, so a user whose clock was eight minutes
+	// ahead lost every event for as long as it stayed ahead. Ten such batches
+	// were refused in eighteen days (#16). An age bound was removed earlier for
+	// the same shape of reason -- a user who leaves the editor open for a month
+	// legitimately reports a very old sessionStart, and the longest-running
+	// installs are disproportionately the heaviest and paid ones.
+	//
+	// Skew is still worth seeing, so the handler logs it; it just no longer
+	// decides whether the events live.
 
 	return nil
+}
+
+// sessionStartSkewMillis reports how far a batch's sessionStart runs ahead of
+// the server, or 0 when it does not.
+//
+// Diagnostic only -- nothing rejects a batch for this. It exists so that a
+// fleet of skewed clocks stays visible in the logs now that it is no longer
+// visible as an error.
+func sessionStartSkewMillis(sessionStart int64, nowMillis int64) int64 {
+	if sessionStart > nowMillis+ingestClockSkewMillis {
+		return sessionStart - nowMillis
+	}
+	return 0
 }
 
 // analyticsEventRejectReason returns "" when the event is storable, otherwise
@@ -1122,10 +1141,25 @@ func analyticsEventRejectReason(event AnalyticsEvent, nowMillis int64) string {
 }
 
 // Timestamp acceptance window, shared by both ingest paths. Consumer clocks
-// drift, so a client a few minutes ahead of the server is reporting in good
-// faith and its data is worth keeping.
+// drift, so a client ahead of the server is reporting in good faith and its
+// data is worth keeping.
+//
+// Compare against time.Now().UnixMilli(), never Unix()*1000: truncating the
+// server's own clock to the second puts it up to 999ms in the past, which reads
+// as the client being in the future. That cost us a tranche of events once
+// already.
+//
+// An hour, widened from five minutes on 17 Nov 2026. Five was the honest guess
+// and it was measured wrong: in eighteen days of ingest logs every single
+// rejection was a timestamp, 896 events from three machines running 306 to 604
+// seconds ahead -- all of them just outside a five-minute window, none of them
+// anywhere near an hour. An unsynchronised Windows clock drifts in minutes, so
+// a window measured in minutes rejects ordinary users for being ordinary.
+//
+// An hour is still far tighter than the age bound below, so a clock that is
+// genuinely wrong, or a replayed batch, is still caught.
 const (
-	ingestClockSkewMillis = 5 * 60 * 1000
+	ingestClockSkewMillis = 60 * 60 * 1000
 	ingestMaxAgeMillis    = 7 * 24 * 60 * 60 * 1000
 )
 
@@ -1893,6 +1927,13 @@ func main() {
 				Details: err.Error(),
 			})
 			return
+		}
+
+		// A clock far enough ahead to have cost this batch its life until 17 Nov
+		// 2026 is now only worth a line in the log (#16).
+		if skew := sessionStartSkewMillis(batch.SessionStart, time.Now().UnixMilli()); skew > 0 {
+			log.Printf("Client %s (version %s) reports sessionStart %dms ahead of the server; batch kept, events judged on their own timestamps",
+				batch.ClientID, batch.AppVersion, skew)
 		}
 
 		// Get client country from Cloudflare header
