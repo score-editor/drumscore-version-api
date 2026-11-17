@@ -90,8 +90,17 @@ Content-Type: application/json
 > `analytics_events` changes.
 >
 > Two things to know before touching analytics here:
-> **(1)** `features.json` is regenerated from the dse-mxml `AnalyticsFeature`
-> enum at release time and is gitignored — never hand-add names to it;
+> **(1)** `features.json` is generated from the dse-mxml `AnalyticsFeature` enum —
+> `drumscore emitfeatures <file>` — and is gitignored here, because it is a
+> DEPLOYMENT: it is mounted into the container, so generating it is only half the
+> job. Never hand-add names to it. **This was aspirational until 17 Nov 2026**: the
+> file had been generated exactly once, on 6 May 2026, and was eight names behind
+> the enum. Nothing reported that, because of (2) — an unlisted name is not an
+> error anybody sees, it is a zero on the dashboard. Four `layout_*` names were in
+> that state from July, while the shipping release emitted them. The generator now
+> exists, its output is byte-identical to the file deployed here, and a test in
+> dse-mxml fails if the committed copy drifts from the enum
+> (score-editor/drumscore-editor#801);
 > **(2)** the allowlist is fail-closed, but *per event* — an unknown name drops
 > that event alone and the rest of the batch is stored. It used to reject the
 > whole batch; see **Rejection behaviour** below.
