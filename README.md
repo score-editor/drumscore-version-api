@@ -41,6 +41,13 @@ See [ADDING_SERVICES.md](ADDING_SERVICES.md) for how to add additional services.
 
 ## Prerequisites
 
+> **The deployment described below is the original home one, and is no longer how this runs.**
+> The service lives on `snare` (a Hetzner vServer) behind Cloudflare — no Odroid, no router port
+> forwarding. See [CURRENT_STATUS.md](CURRENT_STATUS.md) for what is actually deployed; it is
+> authoritative where the two disagree. The sections below are kept as a from-scratch guide and
+> still need rewriting for the current host (score-editor/drumscore-version-api#14).
+
+
 1. **DNS Configuration**
    - A record: `support.drumscore.scot` → your static IPv4
    - AAAA record (optional): `support.drumscore.scot` → your static IPv6 (if you have one)

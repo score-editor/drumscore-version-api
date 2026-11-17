@@ -23,11 +23,17 @@ Client → nginx (ports 80/443)
 
 Add DNS records for your new subdomain:
 
+The service runs on `snare` (a Hetzner vServer) and is published through Cloudflare, so a new
+subdomain is a **proxied** record in the `drumscore.scot` Cloudflare zone pointing at the origin:
+
 ```bash
 # Example: license.drumscore.scot
-A record:    license.drumscore.scot → 51.148.180.134
-AAAA record: license.drumscore.scot → 2a02:8010:6979:0::10
+AAAA record: license.drumscore.scot → 2a01:4f9:c014:d43f::1   (proxied)
 ```
+
+The addresses this section gave until 17 Nov 2026 — `51.148.180.134` and `2a02:8010:6979:0::10` —
+were the old home connection the service ran on before it moved to `snare`. **Do not use them; they
+are no longer ours.**
 
 Wait 5-10 minutes for DNS propagation.
 
@@ -232,7 +238,7 @@ docker compose logs license-service
 # Check nginx logs
 docker compose logs nginx
 
-# Test service directly (from Odroid)
+# Test service directly (on snare)
 curl http://localhost:8080/health  # If service exposes 8080 locally
 ```
 

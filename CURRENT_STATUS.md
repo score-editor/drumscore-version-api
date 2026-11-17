@@ -8,12 +8,19 @@
 - **Migration**: Already switched from `version.drumscore.scot`
 
 ### Infrastructure
-- **Platform**: Odroid M1 (8GB RAM, NVMe SSD)
-- **OS**: Ubuntu 22.04
-- **Network**: 
-  - IPv4: `51.148.180.134`
-  - IPv6: `2a02:8010:6979:0::10`
-  - Ports: 80, 443 forwarded from router
+- **Host**: `snare` — a Hetzner vServer, 2 vCPU aarch64, ~4GB RAM, 40GB disk.
+  **Not the Odroid.** `droid1` is the Odroid M1 on the home LAN and runs backups and the crypto
+  stack; it has nothing to do with this service. This document said Odroid M1 until 17 Nov 2026,
+  which is where the confusion came from.
+- **OS**: Ubuntu 24.04.4 LTS (`6.8.0-88-generic`)
+- **Network**:
+  - Public DNS for `support.drumscore.scot` is **proxied through Cloudflare** — the A/AAAA records
+    are Cloudflare's, not the origin's
+  - Origin is reached over IPv6: `2a01:4f9:c014:d43f::1`
+  - No router port-forwarding is involved. The `version-api-cloudflare-updater` container refreshes
+    `nginx/cloudflare-ips.conf` daily so nginx can restore real client IPs
+  - Deployment path: `/home/alanwhite/drumscore-version-api`, a git clone of this repo, run with
+    `docker compose`
 
 ### Services Running
 1. **Nginx** - Reverse proxy with TLS termination
