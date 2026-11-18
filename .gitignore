@@ -10,6 +10,9 @@ data/
 # Release notes (runtime data)
 release-notes/
 
+# The help site (built from score-editor/drumscore-docs and copied here)
+docs-site/
+
 # Feature allowlist (generated at app release time from dse-mxml AnalyticsFeature enum)
 features.json
 
