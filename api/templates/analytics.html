@@ -301,12 +301,33 @@
         </div>
 
         <div class="period-selector">
-            <a href="/analytics?period=hour" class="period-btn {{if eq .Period "hour"}}active{{end}}">Last Hour</a>
-            <a href="/analytics?period=day" class="period-btn {{if eq .Period "day"}}active{{end}}">Last 24 Hours</a>
-            <a href="/analytics?period=week" class="period-btn {{if eq .Period "week"}}active{{end}}">Last 7 Days</a>
-            <a href="/analytics?period=month" class="period-btn {{if eq .Period "month"}}active{{end}}">Last 30 Days</a>
-            <a href="/analytics?period=year" class="period-btn {{if eq .Period "year"}}active{{end}}">Last Year</a>
+            <a href="/analytics?period=hour&version={{.Filter.Version}}&edition={{.Filter.Edition}}" class="period-btn {{if eq .Period "hour"}}active{{end}}">Last Hour</a>
+            <a href="/analytics?period=day&version={{.Filter.Version}}&edition={{.Filter.Edition}}" class="period-btn {{if eq .Period "day"}}active{{end}}">Last 24 Hours</a>
+            <a href="/analytics?period=week&version={{.Filter.Version}}&edition={{.Filter.Edition}}" class="period-btn {{if eq .Period "week"}}active{{end}}">Last 7 Days</a>
+            <a href="/analytics?period=month&version={{.Filter.Version}}&edition={{.Filter.Edition}}" class="period-btn {{if eq .Period "month"}}active{{end}}">Last 30 Days</a>
+            <a href="/analytics?period=year&version={{.Filter.Version}}&edition={{.Filter.Edition}}" class="period-btn {{if eq .Period "year"}}active{{end}}">Last Year</a>
         </div>
+
+        <form class="period-selector" method="get" action="/analytics" style="padding-top: 0;">
+            <input type="hidden" name="period" value="{{.Period}}">
+            <label>Version
+                <select name="version" onchange="this.form.submit()">
+                    <option value="">All versions</option>
+                    {{range .Versions}}<option value="{{.}}" {{if eq . $.Filter.Version}}selected{{end}}>{{.}}</option>{{end}}
+                </select>
+            </label>
+            <label>Edition
+                <select name="edition" onchange="this.form.submit()">
+                    <option value="">All editions</option>
+                    {{range .Editions}}<option value="{{.}}" {{if eq . $.Filter.Edition}}selected{{end}}>{{.}}</option>{{end}}
+                </select>
+            </label>
+            <noscript><button type="submit">Show</button></noscript>
+        </form>
+        <p style="text-align: center; color: #7f8c8d; font-size: 0.85em; padding: 0 20px 12px; background: #ecf0f1; margin: 0;">
+            Editions recorded before 21 Nov 2026 cannot be told apart: until then a client that did not state
+            its edition was counted as studio, so the studio figure for earlier dates is an upper bound.
+        </p>
 
         <div class="stats-summary">
             <div class="stat-card">
@@ -328,6 +349,11 @@
             <div class="stat-card">
                 <div class="label">Avg Session Duration</div>
                 <div class="value small">{{printf "%.0f" .Sessions.AvgSessionDuration}}s</div>
+                <div class="label" style="text-transform: none;">of the {{.Sessions.EndedSessions}} of {{.Sessions.TotalSessions}} sessions that reported their end</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Events Rejected</div>
+                <div class="value">{{.TotalRejected}}</div>
             </div>
             <div class="stat-card">
                 <div class="label">Sessions / Client</div>
@@ -369,6 +395,23 @@
                 <p>No feature usage data available for this time period.</p>
             </div>
             {{end}}
+        </div>
+
+        <!-- Rejected events -->
+        <div class="data-section">
+            <h2>Events Rejected</h2>
+            {{if .Rejections}}
+            <table>
+                <thead><tr><th>Reason</th><th>Events</th></tr></thead>
+                <tbody>
+                    {{range .Rejections}}<tr><td>{{.Reason}}</td><td>{{.Events}}</td></tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="no-data"><p>No events were rejected in this time period.</p></div>
+            {{end}}
+            <p style="color: #7f8c8d; font-size: 0.85em;">Counted from 21 Nov 2026. Earlier rejections are in the service log only.</p>
         </div>
 
         <!-- Usage Over Time Chart -->
