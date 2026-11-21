@@ -2682,7 +2682,7 @@ func main() {
 		durationQuery := fmt.Sprintf(`
 			SELECT COALESCE(AVG(
 				(julianday(e.timestamp) - julianday(s.timestamp)) * 86400
-			), 0)
+			), 0), COUNT(*)
 			FROM analytics_events s
 			INNER JOIN analytics_events e ON s.client_id = e.client_id
 				AND s.session_start = e.session_start
@@ -2690,21 +2690,11 @@ func main() {
 			WHERE s.event_type = 'session_start'
 				AND s.timestamp >= %s
 		`, joinedTimeFilter)
-		_ = db.QueryRow(durationQuery, filterArgs...).Scan(&sessions.AvgSessionDuration)
-
-		// HOW MANY SESSIONS THAT AVERAGE IS OF (#13). Most sessions never report
-		// their end -- 731 of 6,601 when this was written -- and the ones that
-		// do are the clean quits, so the figure is shown with its own size.
-		endedQuery := fmt.Sprintf(`
-			SELECT COUNT(*)
-			FROM analytics_events s
-			INNER JOIN analytics_events e ON s.client_id = e.client_id
-				AND s.session_start = e.session_start
-				AND e.event_type = 'session_end'
-			WHERE s.event_type = 'session_start'
-				AND s.timestamp >= %s
-		`, joinedTimeFilter)
-		_ = db.QueryRow(endedQuery, filterArgs...).Scan(&sessions.EndedSessions)
+		// AND HOW MANY SESSIONS THAT AVERAGE IS OF (#13), from the same query.
+		// Most sessions never report their end -- 731 of 6,601 when this was
+		// written -- and the ones that do are the clean quits, so the figure is
+		// shown with its own size.
+		_ = db.QueryRow(durationQuery, filterArgs...).Scan(&sessions.AvgSessionDuration, &sessions.EndedSessions)
 
 		// WHICH VERSIONS THERE ARE TO CHOOSE FROM, over the period and whatever
 		// the filter is, so that choosing one never empties the list.
