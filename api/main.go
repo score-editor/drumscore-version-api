@@ -179,6 +179,7 @@ type SessionMetrics struct {
 	TotalSessions      int64
 	UniqueClients      int64
 	AvgSessionDuration float64
+	EndedSessions      int64
 	SessionsPerClient  float64
 }
 
@@ -190,6 +191,11 @@ type VersionFeatureStats struct {
 }
 
 type FeatureAnalytics struct {
+	Filter             dashboardFilter
+	Versions           []string
+	Editions           []string
+	Rejections         []RejectionCount
+	TotalRejected      int64
 	Period             string
 	PeriodLabel        string
 	FeatureStats       []FeaturePopularity
@@ -704,6 +710,12 @@ var validEditions = map[string]bool{
 	"studio":    true,
 }
 
+// editionUnknown is what is recorded for a client that did not say, or said
+// something this build does not know (#13). It used to be "studio", which made
+// that one word mean three things: a licensed user, an unlicensed user whose
+// header went missing, and every row written before the column existed.
+const editionUnknown = "unknown"
+
 func NewConfig(filePath string) *Config {
 	return &Config{
 		filePath: filePath,
@@ -938,14 +950,36 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		return nil, err
 	}
 
+	// Rejected events, counted by reason (#13). The handler has always worked
+	// out why it dropped an event and then only logged it, so a systematic drop
+	// -- eight feature names missing from the allow-list, for one -- showed as
+	// nothing at all on the dashboard.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS analytics_rejections (
+		day TEXT NOT NULL,
+		reason TEXT NOT NULL,
+		app_version TEXT NOT NULL,
+		edition TEXT NOT NULL,
+		events INTEGER NOT NULL,
+		PRIMARY KEY (day, reason, app_version, edition)
+	)`); err != nil {
+		return nil, err
+	}
+
 	log.Println("Database initialized successfully")
 
-	// Migration: add edition column to all tables
+	// Migration: add edition column to all tables.
+	//
+	// The default is 'unknown' for a database made from now on (#13). One that
+	// already has the column keeps the default it was made with -- SQLite cannot
+	// change it in place -- and that is harmless, because every INSERT in this
+	// file states the edition itself. What it does mean is that rows written
+	// before the column existed read 'studio' and always will: the historical
+	// studio figure is an upper bound, not a count.
 	editionMigrations := []string{
-		"ALTER TABLE version_checks ADD COLUMN edition TEXT NOT NULL DEFAULT 'studio'",
-		"ALTER TABLE analytics_events ADD COLUMN edition TEXT NOT NULL DEFAULT 'studio'",
-		"ALTER TABLE monthly_aggregates ADD COLUMN edition TEXT NOT NULL DEFAULT 'studio'",
-		"ALTER TABLE feature_monthly_aggregates ADD COLUMN edition TEXT NOT NULL DEFAULT 'studio'",
+		"ALTER TABLE version_checks ADD COLUMN edition TEXT NOT NULL DEFAULT 'unknown'",
+		"ALTER TABLE analytics_events ADD COLUMN edition TEXT NOT NULL DEFAULT 'unknown'",
+		"ALTER TABLE monthly_aggregates ADD COLUMN edition TEXT NOT NULL DEFAULT 'unknown'",
+		"ALTER TABLE feature_monthly_aggregates ADD COLUMN edition TEXT NOT NULL DEFAULT 'unknown'",
 	}
 	for _, m := range editionMigrations {
 		if _, err := db.Exec(m); err != nil {
@@ -994,6 +1028,90 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+// recordRejections adds one batch's dropped events to the day's count for each
+// reason. A failure here is logged and nothing more: losing a count must never
+// cost the client its accepted events.
+func recordRejections(db *sql.DB, day, appVersion, edition string, reasons map[string]int) {
+	for reason, events := range reasons {
+		if len(reason) > 120 {
+			reason = reason[:120]
+		}
+		if _, err := db.Exec(`INSERT INTO analytics_rejections (day, reason, app_version, edition, events)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(day, reason, app_version, edition) DO UPDATE SET events = events + excluded.events`,
+			day, reason, appVersion, edition, events); err != nil {
+			log.Printf("Could not count %d rejected events (%s): %v", events, reason, err)
+		}
+	}
+}
+
+// RejectionCount is one reason events were dropped, and how many.
+type RejectionCount struct {
+	Reason string
+	Events int64
+}
+
+// rejectionsSince totals the dropped events by reason from the start of a
+// dashboard period, for the product the dashboard is filtered to.
+func rejectionsSince(db *sql.DB, since string, f dashboardFilter) ([]RejectionCount, error) {
+	clause, args := f.clause("")
+	rows, err := db.Query(fmt.Sprintf(`SELECT reason, SUM(events) FROM analytics_rejections
+		WHERE day >= date(%s)%s GROUP BY reason ORDER BY 2 DESC, 1`, since, clause), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var counts []RejectionCount
+	for rows.Next() {
+		var c RejectionCount
+		if err := rows.Scan(&c.Reason, &c.Events); err != nil {
+			return nil, err
+		}
+		counts = append(counts, c)
+	}
+	return counts, rows.Err()
+}
+
+// dashboardFilter is which product the feature dashboard is showing (#13).
+// Through the months 3.6 and 4.0 are both in use, a chart over time alone
+// blends two applications into one.
+type dashboardFilter struct {
+	Version string
+	Edition string
+}
+
+var dashboardVersionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.\-]{0,31}$`)
+
+// parseDashboardFilter reads the two filters off a request. Empty means "all".
+// Anything else must look like a version, or be an edition this build records.
+func parseDashboardFilter(version, edition string) (dashboardFilter, bool) {
+	version = strings.TrimSpace(version)
+	edition = strings.ToLower(strings.TrimSpace(edition))
+	if version != "" && !dashboardVersionPattern.MatchString(version) {
+		return dashboardFilter{}, false
+	}
+	if edition != "" && edition != editionUnknown && !validEditions[edition] {
+		return dashboardFilter{}, false
+	}
+	return dashboardFilter{Version: version, Edition: edition}, true
+}
+
+// clause is the SQL that narrows a query to this filter, with its arguments.
+// The prefix is a table alias with its dot, for a query that joins.
+func (f dashboardFilter) clause(prefix string) (string, []interface{}) {
+	var sqlText string
+	var args []interface{}
+	if f.Version != "" {
+		sqlText += " AND " + prefix + "app_version = ?"
+		args = append(args, f.Version)
+	}
+	if f.Edition != "" {
+		sqlText += " AND " + prefix + "edition = ?"
+		args = append(args, f.Edition)
+	}
+	return sqlText, args
+}
+
 func validateClientID(clientID string) bool {
 	// Must be 64 character hex string (SHA-256)
 	matched, _ := regexp.MatchString("^[a-f0-9]{64}$", clientID)
@@ -1005,7 +1123,7 @@ func normalizeEdition(edition string) string {
 	if validEditions[edition] {
 		return edition
 	}
-	return "studio"
+	return editionUnknown
 }
 
 // Multi-part extensions recognised as a single package format, longest first.
@@ -2003,6 +2121,7 @@ func main() {
 
 		rejected := len(batch.Events) - accepted
 		if rejected > 0 {
+			recordRejections(db, time.Now().UTC().Format("2006-01-02"), batch.AppVersion, edition, rejectReasons)
 			// Log the reasons, not just the count: a taxonomy drift or a fleet of
 			// skewed clocks should be diagnosable from the logs.
 			log.Printf("Events from client %s (version %s, edition %s, %s %s): %d accepted, %d rejected %v",
@@ -2442,7 +2561,17 @@ func main() {
 			http.Error(w, "Invalid period. Use: hour, day, week, month, or year", http.StatusBadRequest)
 			return
 		}
-		period, periodLabel, timeFilter := spec.Period, spec.Label, spec.TimeFilter
+		filter, ok := parseDashboardFilter(r.URL.Query().Get("version"), r.URL.Query().Get("edition"))
+		if !ok {
+			http.Error(w, "Invalid version or edition filter", http.StatusBadRequest)
+			return
+		}
+		// The filter rides on the end of the time filter, so every query below
+		// that says "timestamp >= %s" is narrowed without being rewritten.
+		filterClause, filterArgs := filter.clause("")
+		period, periodLabel, timeFilter := spec.Period, spec.Label, spec.TimeFilter+filterClause
+		joinedClause, _ := filter.clause("s.")
+		joinedTimeFilter := spec.TimeFilter + joinedClause
 		timeBucketFormat := spec.BucketExpr("timestamp")
 		timeGranularity := spec.Granularity
 
@@ -2461,7 +2590,7 @@ func main() {
 			ORDER BY total_uses DESC
 		`, timeFilter)
 
-		rows, err := db.Query(featureQuery)
+		rows, err := db.Query(featureQuery, filterArgs...)
 		if err != nil {
 			log.Printf("Error querying feature stats: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -2495,7 +2624,7 @@ func main() {
 			SELECT COUNT(DISTINCT client_id) FROM analytics_events
 			WHERE event_type = 'feature_used' AND timestamp >= %s
 		`, timeFilter)
-		_ = db.QueryRow(clientQuery).Scan(&totalUniqueClients)
+		_ = db.QueryRow(clientQuery, filterArgs...).Scan(&totalUniqueClients)
 		_ = clientSet // suppress unused warning
 
 		// Query 2: Usage over time (top features + bucketed)
@@ -2512,7 +2641,7 @@ func main() {
 			ORDER BY bucket, total_uses DESC
 		`, timeBucketFormat, timeFilter)
 
-		timeRows, err := db.Query(timeBucketQuery)
+		timeRows, err := db.Query(timeBucketQuery, filterArgs...)
 		if err != nil {
 			log.Printf("Error querying time buckets: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -2543,7 +2672,7 @@ func main() {
 			WHERE event_type = 'session_start'
 				AND timestamp >= %s
 		`, timeFilter)
-		_ = db.QueryRow(sessionQuery).Scan(&sessions.TotalSessions, &sessions.UniqueClients)
+		_ = db.QueryRow(sessionQuery, filterArgs...).Scan(&sessions.TotalSessions, &sessions.UniqueClients)
 
 		if sessions.UniqueClients > 0 {
 			sessions.SessionsPerClient = float64(sessions.TotalSessions) / float64(sessions.UniqueClients)
@@ -2560,8 +2689,46 @@ func main() {
 				AND e.event_type = 'session_end'
 			WHERE s.event_type = 'session_start'
 				AND s.timestamp >= %s
-		`, timeFilter)
-		_ = db.QueryRow(durationQuery).Scan(&sessions.AvgSessionDuration)
+		`, joinedTimeFilter)
+		_ = db.QueryRow(durationQuery, filterArgs...).Scan(&sessions.AvgSessionDuration)
+
+		// HOW MANY SESSIONS THAT AVERAGE IS OF (#13). Most sessions never report
+		// their end -- 731 of 6,601 when this was written -- and the ones that
+		// do are the clean quits, so the figure is shown with its own size.
+		endedQuery := fmt.Sprintf(`
+			SELECT COUNT(*)
+			FROM analytics_events s
+			INNER JOIN analytics_events e ON s.client_id = e.client_id
+				AND s.session_start = e.session_start
+				AND e.event_type = 'session_end'
+			WHERE s.event_type = 'session_start'
+				AND s.timestamp >= %s
+		`, joinedTimeFilter)
+		_ = db.QueryRow(endedQuery, filterArgs...).Scan(&sessions.EndedSessions)
+
+		// WHICH VERSIONS THERE ARE TO CHOOSE FROM, over the period and whatever
+		// the filter is, so that choosing one never empties the list.
+		var versions []string
+		if vRows, err := db.Query(fmt.Sprintf(`SELECT DISTINCT app_version FROM analytics_events
+			WHERE timestamp >= %s AND app_version IS NOT NULL AND app_version != ''
+			ORDER BY app_version DESC`, spec.TimeFilter)); err == nil {
+			for vRows.Next() {
+				var v string
+				if vRows.Scan(&v) == nil && dashboardVersionPattern.MatchString(v) {
+					versions = append(versions, v)
+				}
+			}
+			vRows.Close()
+		}
+
+		rejections, err := rejectionsSince(db, spec.TimeFilter, filter)
+		if err != nil {
+			log.Printf("Error querying rejections: %v", err)
+		}
+		var totalRejected int64
+		for _, rejection := range rejections {
+			totalRejected += rejection.Events
+		}
 
 		// Query 4: Version breakdown
 		versionBreakdownQuery := fmt.Sprintf(`
@@ -2579,7 +2746,7 @@ func main() {
 			ORDER BY total_uses DESC
 		`, timeFilter)
 
-		vbRows, err := db.Query(versionBreakdownQuery)
+		vbRows, err := db.Query(versionBreakdownQuery, filterArgs...)
 		if err != nil {
 			log.Printf("Error querying version breakdown: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -2614,7 +2781,7 @@ func main() {
 			ORDER BY total_uses DESC
 		`, timeFilter)
 
-		osRows, err := db.Query(osBreakdownQuery)
+		osRows, err := db.Query(osBreakdownQuery, filterArgs...)
 		if err != nil {
 			log.Printf("Error querying OS breakdown: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -2648,7 +2815,7 @@ func main() {
 			ORDER BY total_uses DESC
 		`, timeFilter)
 
-		countryRows, err := db.Query(countryBreakdownQuery)
+		countryRows, err := db.Query(countryBreakdownQuery, filterArgs...)
 		if err != nil {
 			log.Printf("Error querying country breakdown: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -2680,6 +2847,11 @@ func main() {
 			GeneratedAt:        time.Now().UTC().Format(time.RFC3339),
 			TotalUses:          totalUses,
 			TotalUniqueClients: totalUniqueClients,
+			Filter:             filter,
+			Versions:           versions,
+			Editions:           []string{"community", "studio", editionUnknown},
+			Rejections:         rejections,
+			TotalRejected:      totalRejected,
 		}
 
 		funcMap := template.FuncMap{
